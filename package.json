@@ -1,0 +1,22 @@
+{
+  "name": "@dimensionalpocket/average-record",
+  "version": "0.0.0",
+  "description": "A lightweight, fully async, Active-Record-style ORM for SQLite.",
+  "type": "module",
+  "main": "./bun/src/index.ts",
+  "types": "./bun/src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./bun/src/index.ts",
+      "default": "./bun/src/index.ts"
+    }
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dimensionalpocket/average-record.git"
+  }
+}

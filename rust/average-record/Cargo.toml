@@ -1,0 +1,35 @@
+[package]
+name = "average-record"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A lightweight, fully async, Active-Record-style ORM for SQLite."
+keywords = ["sqlite", "orm", "sqlx", "async", "active-record"]
+categories = ["database"]
+
+[features]
+default = ["derive"]
+derive = ["dep:average-record-derive"]
+cli = ["dep:clap"]
+
+[dependencies]
+average-record-derive = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+futures-core = { workspace = true }
+futures-util = { workspace = true }
+garde = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+futures-util = { workspace = true }
+garde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
