@@ -48,14 +48,21 @@ on top of the connection you give it.
 
 ## Installation
 
-The crate is distributed from GitHub (no crates.io release). Add it to `Cargo.toml` as a git
-dependency, pinned to a tag:
+The crate is distributed from GitHub (no crates.io release). Add it to `Cargo.toml`, pinned to a
+tag:
 
+<!-- x-release-please-start-version -->
 ```toml
 [dependencies]
 average-record = { git = "https://github.com/dimensionalpocket/average-record", tag = "0.1.0", features = ["derive"] }
+```
+<!-- x-release-please-end -->
 
-# You also need sqlx to build your pool and acquire connections.
+Your application also supplies the supporting crates: `sqlx` to build the pool and acquire
+connections, plus an async runtime.
+
+```toml
+[dependencies]
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures-util = "0.3"

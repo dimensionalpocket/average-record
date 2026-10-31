@@ -10,7 +10,9 @@
           "type": "toml",
           "path": "Cargo.toml",
           "jsonpath": "$.workspace.package.version"
-        }
+        },
+        "rust/README.md",
+        "bun/README.md"
       ]
     }
   }

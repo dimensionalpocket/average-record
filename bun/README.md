@@ -8,12 +8,15 @@ the source directly — there is no build step and no `dist/`.
 
 Pin a tag:
 
+<!-- x-release-please-start-version -->
 ```bash
 bun add github:dimensionalpocket/average-record#0.1.0
 ```
+<!-- x-release-please-end -->
 
 Or add it to `package.json` directly:
 
+<!-- x-release-please-start-version -->
 ```json
 {
   "dependencies": {
@@ -21,6 +24,7 @@ Or add it to `package.json` directly:
   }
 }
 ```
+<!-- x-release-please-end -->
 
 Use `#main` (or a commit SHA) for unreleased code. The dependency name must match the package name
 exactly.
