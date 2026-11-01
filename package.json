@@ -1,7 +1,7 @@
 {
   "name": "@dimensionalpocket/average-record",
   "version": "0.0.0",
-  "description": "A lightweight, fully async, Active-Record-style ORM for SQLite.",
+  "description": "A lightweight, Active-Record-style ORM for SQLite.",
   "type": "module",
   "main": "./bun/index.ts",
   "types": "./bun/index.ts",

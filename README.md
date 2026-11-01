@@ -1,14 +1,14 @@
 # average-record
 
-A lightweight, fully async, Active-Record-style ORM for **SQLite**, with a fluent query builder,
-lifecycle hooks, validation, column redaction, change tracking, and a migration runner.
+A lightweight, Active-Record-style ORM for **SQLite**, with a fluent query builder, lifecycle
+hooks, validation, column redaction, change tracking, and a migration runner.
 
 This repository holds two independent implementations of the same contract:
 
-| Implementation | Location | Documentation |
-| --- | --- | --- |
-| Rust | `rust/` | [rust/README.md](rust/README.md) |
-| TypeScript (Bun) | `bun/` | [bun/README.md](bun/README.md) |
+| Implementation | Location | Execution model | Documentation |
+| --- | --- | --- | --- |
+| Rust | `rust/` | async, over caller-supplied `sqlx` connections | [rust/README.md](rust/README.md) |
+| TypeScript (Bun) | `bun/` | synchronous, matching `bun:sqlite` | [bun/README.md](bun/README.md) |
 
 Both are libraries, not applications: the host application owns the database (its pool, PRAGMAs,
 and data folder); each implementation provides the model, query, and migration layer on top of the
