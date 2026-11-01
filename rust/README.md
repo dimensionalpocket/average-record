@@ -84,45 +84,47 @@ use average_record::{Model, ModelHooks, Migrator, MigratorOptions, Result};
 use sqlx::sqlite::SqlitePool;
 
 #[derive(Model)]
-#[model(table = "songs")]
-struct Song {
+#[model(table = "users")]
+struct User {
     #[model(primary_key)]
     id: Option<i64>,
-    artist_id: i64,
-    title: String,
+    team_id: i64,
+    name: String,
+    email: String,
     locked: bool,
     created_at: String,
     updated_at: String,
 }
 
-impl ModelHooks for Song {}
+impl ModelHooks for User {}
 
 async fn run(pool: &SqlitePool) -> Result<()> {
     let mut conn = pool.acquire().await?;
 
     // Create.
-    let mut song = Song {
+    let mut user = User {
         id: None,
-        artist_id: 1,
-        title: "NIGHT OF FIRE".into(),
+        team_id: 1,
+        name: "Alice".into(),
+        email: "alice@example.com".into(),
         locked: false,
         created_at: String::new(),
         updated_at: String::new(),
     };
-    song.save(&mut conn).await?;
+    user.save(&mut conn).await?;
 
     // Update.
-    song.title = "Night of Fire".into();
-    song.save(&mut conn).await?;
+    user.name = "Alice Smith".into();
+    user.save(&mut conn).await?;
 
     // Query.
-    let eurobeat = Song::query()
-        .where_eq("artist_id", 1)?
-        .order_by("title", average_record::Direction::Asc)?
+    let team = User::query()
+        .where_eq("team_id", 1)?
+        .order_by("name", average_record::Direction::Asc)?
         .all(&mut conn)
         .await?;
 
-    println!("{} songs", eurobeat.len());
+    println!("{} users", team.len());
     Ok(())
 }
 ```
@@ -164,8 +166,8 @@ that connection see each other:
 ```rust
 let mut conn = pool.acquire().await?;
 
-let song = Song::find(&mut conn, 42).await?;
-let stats = Stat::query().where_eq("song_id", 42)?.all(&mut conn).await?;
+let user = User::find(&mut conn, 42).await?;
+let reviews = Review::query().where_eq("user_id", 42)?.all(&mut conn).await?;
 ```
 
 When a workflow performs several related writes, wrap it in a transaction and use the `_within`
@@ -175,11 +177,11 @@ variants:
 let mut conn = pool.acquire().await?;
 let mut tx = conn.begin().await?;
 
-let mut song = Song { artist_id: 1, title: "NIGHT OF FIRE".into(), ..Default::default() };
-song.save_within(&mut tx).await?;
+let mut user = User { team_id: 1, name: "Alice".into(), ..Default::default() };
+user.save_within(&mut tx).await?;
 
-let mut stat = Stat { song_id: song.id.unwrap(), ..Default::default() };
-stat.save_within(&mut tx).await?;
+let mut review = Review { user_id: user.id.unwrap(), ..Default::default() };
+review.save_within(&mut tx).await?;
 
 tx.commit().await?;
 ```
@@ -199,19 +201,24 @@ use average_record::{Model, ModelHooks, ValidationError, Result};
 use garde::Validate;
 use sqlx::SqliteConnection;
 
-#[derive(Model, Validate)]
-#[model(table = "songs")]
-pub struct Song {
+#[derive(Model, Validate, Default)]
+#[model(table = "users")]
+pub struct User {
     #[model(primary_key)]
     pub id: Option<i64>,
 
-    pub artist_id: i64,
+    pub team_id: i64,
 
     #[garde(length(min = 1, max = 200))]
-    pub title: String,
+    pub name: String,
 
-    pub original_title: Option<String>,
-    pub genre: Option<String>,
+    #[redacted]
+    pub email: String,
+
+    #[redacted]
+    pub password_digest: Option<String>,
+
+    pub role: Option<String>,
 
     #[model(column = "locked")]
     pub locked: bool,                 // SQLite INTEGER 0/1, mapped to bool
@@ -219,9 +226,9 @@ pub struct Song {
     pub created_at: String,
     pub updated_at: String,
 
-    /// Populated by a projection (e.g. `Song::artist_name_expr()`); not persisted.
+    /// Populated by a projection (e.g. `User::team_name_expr()`); not persisted.
     #[model(virtual)]
-    pub artist_name: Option<String>,
+    pub team_name: Option<String>,
 }
 ```
 
@@ -229,7 +236,7 @@ pub struct Song {
 
 | Attribute                     | Placement | Meaning                                                                 |
 | ----------------------------- | --------- | ----------------------------------------------------------------------- |
-| `#[model(table = "songs")]`   | struct    | Required. Table name.                                                   |
+| `#[model(table = "users")]`   | struct    | Required. Table name.                                                   |
 | `#[model(primary_key)]`       | field     | Marks the primary key (defaults to a column named `id` if absent).      |
 | `#[model(column = "locked")]` | field     | Maps a Rust field to a differently named column.                        |
 | `#[model(virtual)]`           | field     | Non-persisted projection field (excluded from `COLUMNS` and writes).    |
@@ -245,7 +252,7 @@ Hooks and DB-dependent validation live in a separate, mostly-default `ModelHooks
 impl is valid when the model needs no custom behavior.
 
 ```rust
-impl ModelHooks for Song {
+impl ModelHooks for User {
     async fn before_create(&mut self, _conn: &mut SqliteConnection) -> Result<()> {
         // Runs inside the write transaction, before the INSERT.
         Ok(())
@@ -259,8 +266,8 @@ impl ModelHooks for Song {
     async fn validate_custom(&self, conn: &mut SqliteConnection) -> Result<Vec<ValidationError>> {
         // DB-dependent checks run inside the write transaction.
         let mut errors = Vec::new();
-        if !self.check_uniqueness(conn, "title", &self.title).await? {
-            errors.push(ValidationError::new("title", "is already taken"));
+        if !self.check_uniqueness(conn, "name", &self.name).await? {
+            errors.push(ValidationError::new("name", "is already taken"));
         }
         Ok(errors)
     }
@@ -276,42 +283,42 @@ Hook order on a write: `validate_custom` → `before_create`/`before_update` →
 use average_record::{Model, ModelHooks, Result, SqlValue};
 use sqlx::{sqlite::SqliteRow, Row};
 
-pub struct Song {
+pub struct User {
     pub id: Option<i64>,
-    pub artist_id: i64,
-    pub title: String,
+    pub team_id: i64,
+    pub name: String,
     pub locked: bool,
     pub created_at: String,
     pub updated_at: String,
     /// Not persisted.
-    pub artist_name: Option<String>,
+    pub team_name: Option<String>,
 }
 
-impl Model for Song {
-    const TABLE_NAME: &'static str = "songs";
+impl Model for User {
+    const TABLE_NAME: &'static str = "users";
     const PRIMARY_KEY: &'static str = "id";
     const COLUMNS: &'static [&'static str] = &[
-        "id", "artist_id", "title", "locked", "created_at", "updated_at",
+        "id", "team_id", "name", "locked", "created_at", "updated_at",
     ];
     const REDACTED_COLUMNS: &'static [&'static str] = &[];
 
     fn from_row(row: &SqliteRow) -> Result<Self> {
         Ok(Self {
             id: row.try_get("id")?,
-            artist_id: row.try_get("artist_id")?,
-            title: row.try_get("title")?,
+            team_id: row.try_get("team_id")?,
+            name: row.try_get("name")?,
             locked: row.try_get("locked")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
-            artist_name: row.try_get("artist_name").ok(),
+            team_name: row.try_get("team_name").ok(),
         })
     }
 
     fn to_values(&self) -> Vec<SqlValue> {
         vec![
             self.id.into(),
-            self.artist_id.into(),
-            self.title.clone().into(),
+            self.team_id.into(),
+            self.name.clone().into(),
             self.locked.into(),
             self.created_at.clone().into(),
             self.updated_at.clone().into(),
@@ -319,7 +326,7 @@ impl Model for Song {
     }
 }
 
-impl ModelHooks for Song {}
+impl ModelHooks for User {}
 ```
 
 ---
@@ -330,21 +337,21 @@ impl ModelHooks for Song {}
 let mut conn = pool.acquire().await?;
 
 // Create — `id` is populated from last_insert_rowid.
-let mut song = Song { artist_id: 1, title: "NIGHT OF FIRE".into(), ..Default::default() };
-song.save(&mut conn).await?;
+let mut user = User { team_id: 1, name: "Alice".into(), ..Default::default() };
+user.save(&mut conn).await?;
 
 // Update — same method; presence of the primary key decides INSERT vs UPDATE.
-song.title = "Night of Fire".into();
-song.save(&mut conn).await?;
+user.name = "Alice Smith".into();
+user.save(&mut conn).await?;
 
 // Read
-let found: Option<Song> = Song::find(&mut conn, song.id.unwrap()).await?;
-let first: Option<Song> = Song::first(&mut conn).await?;
-let all: Vec<Song> = Song::all(&mut conn).await?;
-let total: i64 = Song::count(&mut conn).await?;
+let found: Option<User> = User::find(&mut conn, user.id.unwrap()).await?;
+let first: Option<User> = User::first(&mut conn).await?;
+let all: Vec<User> = User::all(&mut conn).await?;
+let total: i64 = User::count(&mut conn).await?;
 
 // Delete
-song.destroy(&mut conn).await?;
+user.destroy(&mut conn).await?;
 ```
 
 `created_at` and `updated_at` are managed automatically when those columns exist in `COLUMNS`.
@@ -377,7 +384,7 @@ Passed to the `_with_options` variants only.
 ```rust
 use average_record::SaveOptions;
 
-song.save_with_options(&mut conn, SaveOptions { skip_updated_at: true, ..Default::default() }).await?;
+user.save_with_options(&mut conn, SaveOptions { skip_updated_at: true, ..Default::default() }).await?;
 ```
 
 ---
@@ -390,11 +397,11 @@ builder holds no database handle.
 ```rust
 use average_record::Direction;
 
-let songs = Song::query()
-    .where_eq("artist_id", 1)?                 // structured steps return Result
-    .where_in("genre", ["eu", "te"])?
+let users = User::query()
+    .where_eq("team_id", 1)?                   // structured steps return Result
+    .where_in("role", ["admin", "editor"])?
     .where_not_in("id", [1, 2, 3])?
-    .where_raw("score > ? AND score < ?", [50, 100])?
+    .where_raw("id > ? AND id < ?", [10, 100])?
     .order_by("created_at", Direction::Desc)?  // validated column
     .limit(20)                                 // infallible
     .offset(40)
@@ -437,12 +444,12 @@ let songs = Song::query()
 ```rust
 use futures_util::TryStreamExt;
 
-let mut stream = Song::query()
-    .where_eq("artist_id", 1)?
-    .order_by("title", Direction::Asc)?
+let mut stream = User::query()
+    .where_eq("team_id", 1)?
+    .order_by("name", Direction::Asc)?
     .fetch(&mut conn);
 
-while let Some(song) = stream.try_next().await? {
+while let Some(user) = stream.try_next().await? {
     // process one row at a time
 }
 ```
@@ -450,12 +457,12 @@ while let Some(song) = stream.try_next().await? {
 ### Joins and projections
 
 ```rust
-let songs = Song::query()
+let users = User::query()
     .select_clear()
-    .select("songs.*")
-    .select("s.score")
-    .join("INNER JOIN stats s ON s.song_id = songs.id AND s.score > ?", [50])?
-    .order_by("s.score", Direction::Desc)?
+    .select("users.*")
+    .select("r.rating")
+    .join("INNER JOIN reviews r ON r.user_id = users.id AND r.rating > ?", [50])?
+    .order_by("r.rating", Direction::Desc)?
     .all(&mut conn)
     .await?;
 ```
@@ -463,8 +470,8 @@ let songs = Song::query()
 ### Fuzzy search
 
 ```rust
-let matches = Song::query()
-    .fuzzy_search("night fire", ["title", "original_title"])?
+let matches = User::query()
+    .fuzzy_search("alice smith", ["name", "email"])?
     .limit(10)
     .all(&mut conn)
     .await?;
@@ -476,16 +483,16 @@ let matches = Song::query()
 use std::collections::HashMap;
 use average_record::SqlValue;
 
-let rows: Vec<HashMap<String, SqlValue>> = Song::query()
+let rows: Vec<HashMap<String, SqlValue>> = User::query()
     .select_clear()
-    .select("title, COUNT(*) AS n")
+    .select("name, COUNT(*) AS n")
     .order_by_raw("n", Direction::Desc)
     .all_raw(&mut conn)
     .await?;
 
 for row in &rows {
-    if let Some(title) = row.get("title").and_then(SqlValue::as_str) {
-        println!("{title}");
+    if let Some(name) = row.get("name").and_then(SqlValue::as_str) {
+        println!("{name}");
     }
 }
 ```
@@ -493,8 +500,8 @@ for row in &rows {
 ### Inspecting generated SQL
 
 ```rust
-let generated = Song::query().where_eq("artist_id", 1)?.to_sql();
-assert_eq!(generated.sql, "SELECT * FROM songs WHERE artist_id = ?");
+let generated = User::query().where_eq("team_id", 1)?.to_sql();
+assert_eq!(generated.sql, "SELECT * FROM users WHERE team_id = ?");
 ```
 
 ---
@@ -505,7 +512,7 @@ assert_eq!(generated.sql, "SELECT * FROM songs WHERE artist_id = ?");
 the same connection. It returns all errors (empty means valid).
 
 ```rust
-let errors = song.validate(&mut conn).await?;
+let errors = user.validate(&mut conn).await?;
 for error in &errors {
     eprintln!("{}: {}", error.column, error.message);
 }
@@ -543,11 +550,11 @@ For the complete, always-current list and their exact arguments, see the
 
 ```rust
 // Single column, excluding this record's own primary key.
-let unique = song.check_uniqueness(&mut conn, "title", &song.title).await?;
+let unique = user.check_uniqueness(&mut conn, "name", &user.name).await?;
 
-// Multi-column or arbitrary condition.
-let unique = song
-    .check_uniqueness_raw(&mut conn, "remote_id = ? AND platform = ?", [&song.remote_id, &song.platform])
+// Arbitrary condition (any raw WHERE fragment).
+let unique = user
+    .check_uniqueness_raw(&mut conn, "lower(name) = lower(?)", [&user.name])
     .await?;
 ```
 
@@ -558,17 +565,12 @@ let unique = song
 Mark sensitive columns with `#[redacted]`. Redaction is applied on demand.
 
 ```rust
-#[derive(Model)]
-#[model(table = "users")]
-pub struct User {
-    #[model(primary_key)]
-    pub id: Option<i64>,
-    pub username: String,
-    #[redacted]
-    pub email: String,
-    #[redacted]
-    pub password_digest: String,
-}
+// From the model definition above:
+#[redacted]
+pub email: String,
+
+#[redacted]
+pub password_digest: Option<String>,
 ```
 
 ```rust
@@ -586,7 +588,7 @@ as a string), keep a small static lookup in your app:
 fn redacted_columns_for(model_name: &str) -> &'static [&'static str] {
     match model_name {
         "User" => User::REDACTED_COLUMNS,
-        "Song" => Song::REDACTED_COLUMNS,
+        "Review" => Review::REDACTED_COLUMNS,
         _ => &[],
     }
 }
@@ -599,10 +601,10 @@ fn redacted_columns_for(model_name: &str) -> &'static [&'static str] {
 Change tracking is opt-in per write via `SaveOptions`, passed to a `*_with_options` method.
 
 ```rust
-song.title = "Night of Fire (Extended)".into();
-song.save_with_options(&mut conn, SaveOptions { track_changes: true, ..Default::default() }).await?;
+user.name = "Alice Smith (Work)".into();
+user.save_with_options(&mut conn, SaveOptions { track_changes: true, ..Default::default() }).await?;
 
-if let Some(changes) = song.tracked_changes() {
+if let Some(changes) = user.tracked_changes() {
     for (column, change) in changes.iter() {
         println!("{column}: {:?} -> {:?}", change.before, change.after);
     }
@@ -619,8 +621,8 @@ For audit logging, `TrackedChanges::to_json(redact)` renders the diff, redacting
 Additional helpers:
 
 ```rust
-let current_vs_db = song.changes(&mut conn, false).await?; // diff of current values vs persisted
-let dirty = song.changed(&mut conn).await?;                // bool
+let current_vs_db = user.changes(&mut conn, false).await?; // diff of current values vs persisted
+let dirty = user.changed(&mut conn).await?;                // bool
 ```
 
 ---
@@ -678,8 +680,8 @@ The crate exposes a single error enum and a `Result` alias.
 ```rust
 use average_record::{Error, Result};
 
-async fn rename(song: &mut Song, conn: &mut sqlx::SqliteConnection) -> Result<()> {
-    match song.save(conn).await {
+async fn rename(user: &mut User, conn: &mut sqlx::SqliteConnection) -> Result<()> {
+    match user.save(conn).await {
         Ok(()) => Ok(()),
         Err(Error::Validation(errors)) => {
             // surface `errors` to the caller

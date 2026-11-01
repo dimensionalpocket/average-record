@@ -8,7 +8,7 @@ use syn::{Data, DeriveInput, Fields, Type, parse_macro_input};
 /// Derives `average_record::Model` (and `serde::Serialize`) for a struct.
 ///
 /// Struct attributes:
-/// - `#[model(table = "songs")]` — required table name.
+/// - `#[model(table = "users")]` — required table name.
 ///
 /// Field attributes:
 /// - `#[model(primary_key)]` — marks the primary key (defaults to a field named `id`).

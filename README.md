@@ -23,7 +23,7 @@ connection it is given.
 
 ```
 Cargo.toml        Rust workspace root (kept at the root so `git = "..."` dependencies resolve)
-package.json      Bun package root, entry point → bun/src/index.ts
+package.json      Bun package root, entry point → bun/index.ts
 rust/             Rust crates
 bun/              TypeScript sources and tests
 dev/              Design notes and plans

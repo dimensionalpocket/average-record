@@ -13,12 +13,12 @@
 //! # use average_record::{Model, ModelHooks, Result};
 //! # use sqlx::SqliteConnection;
 //! # #[derive(Model)]
-//! # #[model(table = "songs")]
-//! # struct Song { #[model(primary_key)] id: Option<i64>, title: String }
-//! # impl ModelHooks for Song {}
-//! # async fn example(conn: &mut SqliteConnection, mut song: Song) -> Result<()> {
-//! song.save(conn).await?;
-//! let found = Song::find(conn, song.id.unwrap_or_default()).await?;
+//! # #[model(table = "users")]
+//! # struct User { #[model(primary_key)] id: Option<i64>, name: String }
+//! # impl ModelHooks for User {}
+//! # async fn example(conn: &mut SqliteConnection, mut user: User) -> Result<()> {
+//! user.save(conn).await?;
+//! let found = User::find(conn, user.id.unwrap_or_default()).await?;
 //! # let _ = found;
 //! # Ok(())
 //! # }

@@ -3,13 +3,21 @@
   "version": "0.0.0",
   "description": "A lightweight, fully async, Active-Record-style ORM for SQLite.",
   "type": "module",
-  "main": "./bun/src/index.ts",
-  "types": "./bun/src/index.ts",
+  "main": "./bun/index.ts",
+  "types": "./bun/index.ts",
   "exports": {
     ".": {
-      "types": "./bun/src/index.ts",
-      "default": "./bun/src/index.ts"
+      "types": "./bun/index.ts",
+      "default": "./bun/index.ts"
     }
+  },
+  "dependencies": {
+    "@dimensionalpocket/tagged-logger": "github:dimensionalpocket/tagged-logger#0.1.0",
+    "deep-object-diff": "1.1.9",
+    "valibot": "1.4.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4"
   },
   "engines": {
     "bun": ">=1.2.0"

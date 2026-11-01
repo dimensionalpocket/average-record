@@ -1,2 +1,5 @@
 [test]
 root = "./bun"
+
+[test.reporter]
+dots = true

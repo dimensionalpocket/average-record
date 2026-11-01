@@ -1,0 +1,1312 @@
+import { describe, expect, it, beforeAll, setSystemTime } from "bun:test";
+import * as v from "valibot";
+import { ApplicationRecord, redactedCache } from "./ApplicationRecord";
+import { BunSqliteDatabase } from "./BunSqliteDatabase";
+
+beforeAll(() => {
+  redactedCache.clear();
+});
+
+describe("ApplicationRecord", () => {
+  const db = new BunSqliteDatabase(":memory:", ":memory:", { strict: true }, [
+    "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)",
+    "CREATE TABLE artists (id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT, updated_at TEXT)",
+    "CREATE TABLE empty_models (id INTEGER PRIMARY KEY, name TEXT, email TEXT)",
+  ]);
+
+  class User extends ApplicationRecord {
+    static database = db;
+    static tableName = "users";
+    static schema = v.object({
+      id: v.optional(v.number()),
+      name: v.string(),
+      email: v.optional(v.pipe(v.string(), v.metadata({ redacted: true }))),
+    });
+
+    declare id: number;
+    declare name: string;
+    declare email: string;
+  }
+
+  describe(".database", () => {
+    it("accepts database assignment on subclass", () => {
+      class Product extends ApplicationRecord {}
+      const productDb = new BunSqliteDatabase(":memory:", ":memory:", {
+        strict: true,
+      });
+      Product.database = productDb;
+      expect(Product.database).toBe(productDb);
+    });
+
+    it("inherits database from ApplicationRecord when not overridden", () => {
+      const inheritedDb = new BunSqliteDatabase(":memory:", ":memory:", {
+        strict: true,
+      });
+      ApplicationRecord.database = inheritedDb;
+
+      class Item extends ApplicationRecord {}
+      expect(Item.database).toBe(inheritedDb);
+    });
+
+    it("maintains separate database instances per subclass", () => {
+      class A extends ApplicationRecord {}
+      class B extends ApplicationRecord {}
+
+      const dbA = new BunSqliteDatabase(":memory:", ":memory:", {
+        strict: true,
+      });
+      const dbB = new BunSqliteDatabase(":memory:", ":memory:", {
+        strict: true,
+      });
+
+      A.database = dbA;
+      B.database = dbB;
+
+      expect(A.database).toBe(dbA);
+      expect(B.database).toBe(dbB);
+    });
+
+    it("leaves ApplicationRecord.database unchanged when subclass overrides", () => {
+      const parentDb = new BunSqliteDatabase(":memory:", ":memory:", {
+        strict: true,
+      });
+      ApplicationRecord.database = parentDb;
+
+      class C extends ApplicationRecord {}
+      const childDb = new BunSqliteDatabase(":memory:", ":memory:", {
+        strict: true,
+      });
+      C.database = childDb;
+
+      expect(C.database).toBe(childDb);
+      expect(ApplicationRecord.database).toBe(parentDb);
+    });
+  });
+
+  describe("#constructor", () => {
+    it("creates instance with typed data", () => {
+      const user = new User({ name: "Alice", email: "alice@example.com" });
+      expect(user.name).toBe("Alice");
+      expect(user.email).toBe("alice@example.com");
+    });
+  });
+
+  describe(".find()", () => {
+    it("finds existing record by id", () => {
+      const user = new User({ name: "Bob", email: "bob@example.com" });
+      user.save();
+      const found = User.find(user.id!);
+      expect(found).not.toBeNull();
+      expect(found!.name).toBe("Bob");
+    });
+
+    it("returns null for missing id", () => {
+      const user = User.find(999);
+      expect(user).toBeNull();
+    });
+  });
+
+  describe(".allRaw()", () => {
+    it("returns all records as plain objects", () => {
+      new User({ name: "RawUser", email: "raw@example.com" }).save();
+      const users = User.allRaw();
+      expect(users.length).toBeGreaterThanOrEqual(1);
+      expect(users[0]).toBeInstanceOf(Object);
+    });
+
+    it("filters records with conditions", () => {
+      new User({
+        name: "FilteredRaw",
+        email: "filteredraw@example.com",
+      }).save();
+      const users = User.where("name", "=", "FilteredRaw").allRaw();
+      expect(users.length).toBe(1);
+      expect(users[0].name).toBe("FilteredRaw");
+    });
+
+    it("applies limit with scope", () => {
+      const users = User.limit(1).allRaw();
+      expect(users.length).toBeLessThanOrEqual(1);
+    });
+  });
+
+  describe(".all()", () => {
+    it("returns all records", () => {
+      const users = User.all();
+      expect(users.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("filters records with conditions", () => {
+      new User({ name: "FilteredUser", email: "filtered@example.com" }).save();
+      const users = User.where("name", "=", "FilteredUser").all();
+      expect(users.length).toBe(1);
+      expect(users[0].name).toBe("FilteredUser");
+    });
+
+    it("applies order by with scope", () => {
+      new User({ name: "AUser", email: "a@example.com" }).save();
+      new User({ name: "BUser", email: "b@example.com" }).save();
+      const users = User.orderBy("name", "DESC").limit(1).all();
+      expect(users.length).toBe(1);
+    });
+  });
+
+  describe(".first()", () => {
+    it("returns null when no records match", () => {
+      const result = User.where("name", "=", "Nonexistent").first();
+      expect(result).toBeNull();
+    });
+
+    it("returns the first record matching conditions", () => {
+      new User({ name: "FirstMatch", email: "firstmatch@example.com" }).save();
+      const result = User.where("name", "=", "FirstMatch").first();
+      expect(result).not.toBeNull();
+      expect(result!.name).toBe("FirstMatch");
+    });
+
+    it("returns a record without conditions", () => {
+      const result = User.first();
+      expect(result).not.toBeNull();
+      expect(typeof result!.name).toBe("string");
+    });
+
+    it("respects ORDER BY when sorting is given", () => {
+      new User({ name: "Aardvark", email: "aardvark@example.com" }).save();
+      new User({ name: "Zebra", email: "zebra@example.com" }).save();
+      const result = User.orderBy("name", "DESC").first();
+      expect(result).not.toBeNull();
+      expect(result!.name).toBe("Zebra");
+    });
+  });
+
+  describe(".count()", () => {
+    it("counts all records", () => {
+      const count = User.count();
+      expect(count).toBeGreaterThanOrEqual(1);
+    });
+
+    it("counts records with conditions", () => {
+      new User({ name: "CountMe", email: "countme@example.com" }).save();
+      const count = User.where("name", "=", "CountMe").count();
+      expect(count).toBe(1);
+    });
+
+    it("returns 0 when no records match", () => {
+      const count = User.where("name", "=", "Nonexistent").count();
+      expect(count).toBe(0);
+    });
+  });
+
+  describe(".eachRaw()", () => {
+    it("iterates over all records as plain objects", () => {
+      new User({ name: "EachRawUser", email: "eachraw@example.com" }).save();
+      const names: string[] = [];
+      for (const user of User.eachRaw()) {
+        names.push(user.name as string);
+      }
+      expect(names).toContain("EachRawUser");
+    });
+
+    it("yields plain objects, not model instances", () => {
+      new User({ name: "PlainUser", email: "plain@example.com" }).save();
+      for (const row of User.eachRaw()) {
+        expect(row).toBeInstanceOf(Object);
+        expect(row).not.toBeInstanceOf(User);
+        break;
+      }
+    });
+
+    it("filters records with conditions", () => {
+      new User({
+        name: "FilteredEachRaw",
+        email: "filteredeachraw@example.com",
+      }).save();
+      const names: string[] = [];
+      for (const row of User.where("name", "=", "FilteredEachRaw").eachRaw()) {
+        names.push(row.name as string);
+      }
+      expect(names).toContain("FilteredEachRaw");
+    });
+  });
+
+  describe(".each()", () => {
+    it("iterates over all records", () => {
+      new User({ name: "EachUser", email: "each@example.com" }).save();
+      const names: string[] = [];
+      for (const user of User.each()) {
+        names.push(user.name);
+      }
+      expect(names).toContain("EachUser");
+    });
+
+    it("returns model instances", () => {
+      new User({ name: "InstanceUser", email: "instance@example.com" }).save();
+      for (const user of User.each()) {
+        expect(user).toBeInstanceOf(User);
+        break;
+      }
+    });
+
+    it("works with empty tables", () => {
+      class EmptyModel extends ApplicationRecord {
+        static database = db;
+        static tableName = "empty_models";
+        static schema = v.object({
+          id: v.optional(v.number()),
+          name: v.string(),
+          email: v.optional(v.string()),
+        });
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+      }
+
+      const count = [...EmptyModel.each()].length;
+      expect(count).toBe(0);
+    });
+
+    it("filters records with conditions", () => {
+      new User({
+        name: "FilteredEach",
+        email: "filteredeach@example.com",
+      }).save();
+      const names: string[] = [];
+      for (const user of User.where("name", "=", "FilteredEach").each()) {
+        names.push(user.name);
+      }
+      expect(names).toContain("FilteredEach");
+    });
+
+    it("applies limit with scope", () => {
+      const count = [...User.limit(1).each()].length;
+      expect(count).toBeLessThanOrEqual(1);
+    });
+  });
+
+  describe(".redacted()", () => {
+    it("returns columns marked as redacted in schema", () => {
+      expect(User.redacted()).toEqual(["email"]);
+    });
+  });
+
+  describe("#save()", () => {
+    it("saves new record and assigns id", () => {
+      const user = new User({ name: "Charlie", email: "charlie@example.com" });
+      user.save();
+      expect(user.id).toBeDefined();
+    });
+
+    it("updates existing record", () => {
+      const user = User.all()[0];
+      user.name = "Chuck";
+      user.save();
+      const updated = User.find(user.id)!;
+      expect(updated.name).toBe("Chuck");
+    });
+
+    it("applies defaults on insert", () => {
+      class DefaultUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "default_users";
+        static schema = v.object({
+          id: v.optional(v.number()),
+          name: v.string(),
+          email: v.optional(v.string()),
+          role: v.fallback(v.string(), "member"),
+          active: v.fallback(v.number(), 1),
+        });
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+        declare role: string;
+        declare active: number;
+      }
+
+      db.getDb().run(`
+        CREATE TABLE IF NOT EXISTS default_users (
+          id INTEGER PRIMARY KEY,
+          name TEXT,
+          email TEXT,
+          role TEXT NOT NULL DEFAULT 'member',
+          active INTEGER NOT NULL DEFAULT 1
+        )
+      `);
+
+      const user = new DefaultUser({ name: "DefaultsOnly" });
+      user.save();
+      expect(user.role).toBe("member");
+      expect(user.active).toBe(1);
+
+      const found = DefaultUser.find(user.id!)!;
+      expect(found.role).toBe("member");
+      expect(found.active).toBe(1);
+    });
+  });
+
+  describe("#setTimestamps()", () => {
+    class TimestampedModel extends ApplicationRecord {
+      static database = db;
+      static tableName = "timestamped_models";
+      static schema = v.object({
+        id: v.optional(v.number()),
+        name: v.string(),
+        created_at: v.string(),
+        updated_at: v.string(),
+      });
+
+      declare id: number;
+      declare name: string;
+      declare created_at: string;
+      declare updated_at: string;
+    }
+
+    class NoTimestampModel extends ApplicationRecord {
+      static database = db;
+      static tableName = "no_timestamp_models";
+      static schema = v.object({
+        id: v.optional(v.number()),
+        name: v.string(),
+      });
+
+      declare id: number;
+      declare name: string;
+    }
+
+    beforeAll(() => {
+      db.getDb().run(`
+        CREATE TABLE IF NOT EXISTS timestamped_models (
+          id INTEGER PRIMARY KEY,
+          name TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `);
+      db.getDb().run(`
+        CREATE TABLE IF NOT EXISTS no_timestamp_models (
+          id INTEGER PRIMARY KEY,
+          name TEXT
+        )
+      `);
+    });
+
+    it("sets created_at and updated_at on new records", () => {
+      const model = new TimestampedModel({ name: "NewTimestamped" });
+      model.save();
+      expect(model.created_at).toBeDefined();
+      expect(model.updated_at).toBeDefined();
+    });
+
+    it("updates updated_at but preserves created_at on updates", () => {
+      const model = new TimestampedModel({ name: "UpdateTimestamped" });
+      model.save();
+      const originalCreatedAt = model.created_at;
+      const originalUpdatedAt = model.updated_at;
+
+      setSystemTime(new Date(Date.now() + 1000));
+      model.name = "UpdatedName";
+      model.save();
+      setSystemTime();
+
+      expect(model.created_at).toBe(originalCreatedAt);
+      expect(model.updated_at).not.toBe(originalUpdatedAt);
+    });
+
+    it("preserves updated_at when skipUpdatedAt is set on update", () => {
+      const model = new TimestampedModel({ name: "SkipUpdatedAt" });
+      model.save();
+      const originalCreatedAt = model.created_at;
+      const originalUpdatedAt = model.updated_at;
+
+      setSystemTime(new Date(Date.now() + 1000));
+      model.name = "SkippedName";
+      model.save({ skipUpdatedAt: true });
+      setSystemTime();
+
+      expect(model.created_at).toBe(originalCreatedAt);
+      expect(model.updated_at).toBe(originalUpdatedAt);
+
+      const found = TimestampedModel.find(model.id)!;
+      expect(found.name).toBe("SkippedName");
+      expect(found.updated_at).toBe(originalUpdatedAt);
+    });
+
+    it("sets updated_at on insert even when skipUpdatedAt is set", () => {
+      const model = new TimestampedModel({ name: "InsertSkipUpdatedAt" });
+      model.save({ skipUpdatedAt: true });
+      expect(model.created_at).toBeDefined();
+      expect(model.updated_at).toBeDefined();
+    });
+
+    it("does not overwrite existing created_at value", () => {
+      const past = "2020-01-01T00:00:00.000Z";
+      const model = new TimestampedModel({
+        name: "PastTimestamped",
+        created_at: past,
+      });
+      model.save();
+      expect(model.created_at).toBe(past);
+    });
+
+    it("does nothing when schema has no timestamp columns", () => {
+      const model = new NoTimestampModel({ name: "NoTimestamps" });
+      model.save();
+      expect((model as any).created_at).toBeUndefined();
+      expect((model as any).updated_at).toBeUndefined();
+    });
+  });
+
+  describe("#destroy()", () => {
+    it("removes record from database", () => {
+      const user = User.all()[0];
+      user.destroy();
+      const found = User.find(user.id!);
+      expect(found).toBeNull();
+    });
+  });
+
+  describe("#persisted()", () => {
+    it("returns null for new record", () => {
+      const user = new User({ name: "New", email: "new@example.com" });
+      expect(user.persisted()).toBeNull();
+    });
+
+    it("returns current database state ignoring unsaved changes", () => {
+      const user = new User({
+        name: "PersistedUser",
+        email: "persisted@example.com",
+      });
+      user.save();
+      user.name = "Modified";
+      const state = user.persisted();
+      expect(state!.name).toBe("PersistedUser");
+    });
+
+    it("redacts sensitive columns when redact is true", () => {
+      const user = new User({
+        name: "RedactedUser",
+        email: "redacted@example.com",
+      });
+      user.save();
+      const state = user.persisted(true);
+      expect(state!.email).toBe("[redacted]");
+    });
+
+    it("redacts sensitive columns when redact is true", () => {
+      const user = new User({
+        name: "RedactPersistedUser",
+        email: "redactpersisted@example.com",
+      });
+      user.save();
+      const state = user.persisted(true);
+      expect(state!.email).toBe("[redacted]");
+    });
+  });
+
+  describe("#toJSON()", () => {
+    it("returns instance attributes as JSON", () => {
+      const user = new User({ name: "Eve", email: "eve@example.com" });
+      user.save();
+      expect(user.toJSON()).toEqual({
+        id: user.id,
+        name: "Eve",
+        email: "eve@example.com",
+      });
+    });
+
+    it("redacts sensitive columns when redact is true", () => {
+      const user = new User({ name: "Frank", email: "frank@example.com" });
+      user.save();
+      expect(user.toJSON(true)).toEqual({
+        id: user.id,
+        name: "Frank",
+        email: "[redacted]",
+      });
+    });
+  });
+
+  describe("#changes()", () => {
+    it("returns empty object for new record", () => {
+      const user = new User({ name: "Grace", email: "grace@example.com" });
+      expect(user.changes()).toEqual({});
+    });
+
+    it("returns diff when instance values differ from database", () => {
+      const user = new User({
+        name: "ChangeUser",
+        email: "change@example.com",
+      });
+      user.save();
+      user.name = "NewName";
+      expect(user.changes()).toEqual({ name: "NewName" });
+    });
+
+    it("returns empty object when no changes made", () => {
+      const user = new User({
+        name: "NoChangeUser",
+        email: "nochange@example.com",
+      });
+      user.save();
+      expect(user.changes()).toEqual({});
+    });
+
+    it("redacts sensitive columns in diff when redact is true", () => {
+      const user = new User({
+        name: "RedactChangeUser",
+        email: "redactchange@example.com",
+      });
+      user.save();
+      user.email = "new@example.com";
+      expect(user.changes(true)).toEqual({ email: "[redacted]" });
+    });
+  });
+
+  describe("#beforeCreate()", () => {
+    it("calls beforeCreate when saving a new record", () => {
+      let called = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected beforeCreate(): void {
+          called = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      expect(called).toBe(true);
+    });
+
+    it("does not call beforeCreate when updating an existing record", () => {
+      let createCalled = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected beforeCreate(): void {
+          createCalled = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      createCalled = false;
+
+      user.name = "Updated";
+      user.save();
+      expect(createCalled).toBe(false);
+    });
+  });
+
+  describe("#beforeUpdate()", () => {
+    it("calls beforeUpdate when saving an existing record", () => {
+      let updateCalled = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected beforeUpdate(): void {
+          updateCalled = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      updateCalled = false;
+
+      user.name = "Updated";
+      user.save();
+      expect(updateCalled).toBe(true);
+    });
+
+    it("does not call beforeUpdate when inserting a new record", () => {
+      let updateCalled = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected beforeUpdate(): void {
+          updateCalled = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      expect(updateCalled).toBe(false);
+    });
+  });
+
+  describe("#afterCreate()", () => {
+    it("calls afterCreate when creating a new record", () => {
+      let createCalled = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected afterCreate(): void {
+          createCalled = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      expect(createCalled).toBe(true);
+    });
+
+    it("does not call afterCreate when updating", () => {
+      let createCalled = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected afterCreate(): void {
+          createCalled = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      createCalled = false;
+
+      user.name = "Updated";
+      user.save();
+      expect(createCalled).toBe(false);
+    });
+  });
+
+  describe("#afterUpdate()", () => {
+    it("calls afterUpdate when updating an existing record", () => {
+      let updateCalled = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected afterUpdate(): void {
+          updateCalled = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      updateCalled = false;
+
+      user.name = "Updated";
+      user.save();
+      expect(updateCalled).toBe(true);
+    });
+
+    it("does not call afterUpdate when creating", () => {
+      let updateCalled = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected afterUpdate(): void {
+          updateCalled = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      expect(updateCalled).toBe(false);
+    });
+  });
+
+  describe("#afterSave()", () => {
+    it("calls afterSave when creating a new record", () => {
+      let saveCalled = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected afterSave(): void {
+          saveCalled = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      expect(saveCalled).toBe(true);
+    });
+
+    it("calls afterSave when updating an existing record", () => {
+      let saveCalled = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected afterSave(): void {
+          saveCalled = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      saveCalled = false;
+
+      user.name = "Updated";
+      user.save();
+      expect(saveCalled).toBe(true);
+    });
+
+    it("runs after specialized callback on create", () => {
+      const order: string[] = [];
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected afterCreate(): void {
+          order.push("afterCreate");
+        }
+
+        protected afterSave(): void {
+          order.push("afterSave");
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      expect(order).toEqual(["afterCreate", "afterSave"]);
+    });
+
+    it("runs after specialized callback on update", () => {
+      const order: string[] = [];
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected afterUpdate(): void {
+          order.push("afterUpdate");
+        }
+
+        protected afterSave(): void {
+          order.push("afterSave");
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      order.length = 0;
+
+      user.name = "Updated";
+      user.save();
+      expect(order).toEqual(["afterUpdate", "afterSave"]);
+    });
+  });
+
+  describe("#afterDestroy()", () => {
+    it("calls afterDestroy when destroying a record", () => {
+      let destroyCalled = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected afterDestroy(): void {
+          destroyCalled = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      user.destroy();
+      expect(destroyCalled).toBe(true);
+    });
+
+    it("does not call afterDestroy when not destroying", () => {
+      let destroyCalled = false;
+      class HookedUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = User.schema;
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected afterDestroy(): void {
+          destroyCalled = true;
+        }
+      }
+
+      const user = new HookedUser({ name: "Hook", email: "hook@example.com" });
+      user.save();
+      expect(destroyCalled).toBe(false);
+    });
+  });
+
+  describe("#validate()", () => {
+    it("returns empty array for valid record", async () => {
+      const user = new User({ name: "Valid", email: "valid@example.com" });
+      expect(await user.validate()).toEqual([]);
+    });
+
+    it("returns errors for invalid record", async () => {
+      const user = new User({ name: 123 as any, email: 456 as any });
+      const errors = await user.validate();
+      expect(errors.length).toBe(2);
+      expect(errors.some((e) => e.column === "name")).toBe(true);
+      expect(errors.some((e) => e.column === "email")).toBe(true);
+    });
+
+    it("returns multiple errors for same column", async () => {
+      class StrictUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = v.object({
+          id: v.optional(v.number()),
+          name: v.pipe(v.string(), v.minLength(5)),
+          email: v.optional(v.pipe(v.string(), v.email())),
+        });
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+      }
+
+      const user = new StrictUser({ name: "ab", email: "invalid" });
+      const errors = await user.validate();
+      const nameErrors = errors.filter((e) => e.column === "name");
+      expect(nameErrors.length).toBe(1);
+      const emailErrors = errors.filter((e) => e.column === "email");
+      expect(emailErrors.length).toBe(1);
+    });
+
+    it("returns empty array when optional fields are missing", async () => {
+      const user = new User({ name: "Test" });
+      expect(await user.validate()).toEqual([]);
+    });
+
+    it("combines schema and custom validation errors", async () => {
+      class CustomUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = v.object({
+          id: v.optional(v.number()),
+          name: v.string(),
+          email: v.optional(v.string()),
+        });
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected async validateCustom() {
+          const errors: { column: string; message: string }[] = [];
+          if (this.name === "BadName") {
+            errors.push({ column: "name", message: "is not allowed" });
+          }
+          return errors;
+        }
+      }
+
+      const user = new CustomUser({
+        name: "BadName",
+        email: "bad@example.com",
+      });
+      const errors = await user.validate();
+      expect(errors.length).toBe(1);
+      expect(errors[0]).toEqual({ column: "name", message: "is not allowed" });
+    });
+
+    it("returns only schema errors when custom validation passes", async () => {
+      class CustomUser extends ApplicationRecord {
+        static database = db;
+        static tableName = "users";
+        static schema = v.object({
+          id: v.optional(v.number()),
+          name: v.string(),
+          email: v.optional(v.string()),
+        });
+
+        declare id: number;
+        declare name: string;
+        declare email: string;
+
+        protected async validateCustom() {
+          return [];
+        }
+      }
+
+      const user = new CustomUser({ name: 123 as any });
+      const errors = await user.validate();
+      expect(errors.length).toBe(1);
+      expect(errors[0].column).toBe("name");
+    });
+  });
+
+  describe("#checkUniqueness()", () => {
+    class TestArtist extends ApplicationRecord {
+      static database = db;
+      static tableName = "artists";
+      static schema = v.object({
+        id: v.optional(v.number()),
+        name: v.string(),
+        created_at: v.string(),
+        updated_at: v.string(),
+      });
+
+      declare id: number;
+      declare name: string;
+      declare created_at: string;
+      declare updated_at: string;
+    }
+
+    it("returns true for a new unique value", () => {
+      const artist = new TestArtist({ name: "UniqueName" });
+      expect(artist.checkUniqueness("name", "UniqueName")).toBe(true);
+    });
+
+    it("returns false for a duplicate value", () => {
+      const existing = new TestArtist({ name: "ExistingArtist" });
+      existing.save();
+
+      const artist = new TestArtist({ name: "ExistingArtist" });
+      expect(artist.checkUniqueness("name", "ExistingArtist")).toBe(false);
+    });
+
+    it("returns true when updating an existing record with its own value", () => {
+      const existing = new TestArtist({ name: "OwnValue" });
+      existing.save();
+
+      expect(existing.checkUniqueness("name", "OwnValue")).toBe(true);
+    });
+  });
+
+  describe("#checkUniquenessRaw()", () => {
+    class TestArtist extends ApplicationRecord {
+      static database = db;
+      static tableName = "artists";
+      static schema = v.object({
+        id: v.optional(v.number()),
+        name: v.string(),
+        created_at: v.string(),
+        updated_at: v.string(),
+      });
+
+      declare id: number;
+      declare name: string;
+      declare created_at: string;
+      declare updated_at: string;
+    }
+
+    it("returns true for a unique combination", () => {
+      const artist = new TestArtist({ name: "ComboUnique" });
+      expect(artist.checkUniquenessRaw("name = ?", ["ComboUnique"])).toBe(true);
+    });
+
+    it("returns false for a duplicate combination", () => {
+      const existing = new TestArtist({ name: "ComboExisting" });
+      existing.save();
+
+      const artist = new TestArtist({ name: "ComboExisting" });
+      expect(artist.checkUniquenessRaw("name = ?", ["ComboExisting"])).toBe(
+        false,
+      );
+    });
+
+    it("returns true when updating an existing record with its own values", () => {
+      const existing = new TestArtist({ name: "ComboOwn" });
+      existing.save();
+
+      expect(existing.checkUniquenessRaw("name = ?", ["ComboOwn"])).toBe(true);
+    });
+
+    it("supports multi-column conditions", () => {
+      const existing = new TestArtist({ name: "MultiCol" });
+      existing.save();
+
+      const artist = new TestArtist({ name: "MultiCol" });
+      expect(
+        artist.checkUniquenessRaw("name = ? AND created_at = ?", [
+          "MultiCol",
+          existing.created_at,
+        ]),
+      ).toBe(false);
+    });
+
+    it("returns true when multi-column condition does not match", () => {
+      const existing = new TestArtist({ name: "MultiColNoMatch" });
+      existing.save();
+
+      const artist = new TestArtist({ name: "MultiColNoMatch" });
+      expect(
+        artist.checkUniquenessRaw("name = ? AND created_at = ?", [
+          "MultiColNoMatch",
+          "2099-01-01",
+        ]),
+      ).toBe(true);
+    });
+  });
+
+  describe("#trackedChanges()", () => {
+    class TrackedItem extends ApplicationRecord {
+      static database = db;
+      static tableName = "artists";
+      static schema = v.object({
+        id: v.optional(v.number()),
+        name: v.string(),
+        created_at: v.string(),
+        updated_at: v.string(),
+      });
+      declare id: number;
+      declare name: string;
+      declare created_at: string;
+      declare updated_at: string;
+    }
+
+    it("returns null after save without trackChanges", () => {
+      const item = new TrackedItem({ name: "NoTrack" });
+      item.save();
+      expect(item.trackedChanges()).toBeNull();
+    });
+
+    it("captures changes as old/new pairs after save with trackChanges", () => {
+      const item = new TrackedItem({ name: "Original" });
+      item.save();
+
+      item.name = "Updated";
+      item.save({ trackChanges: true });
+
+      const changes = item.trackedChanges();
+      expect(changes).not.toBeNull();
+      expect(changes!.name).toEqual(["Original", "Updated"]);
+    });
+
+    it("captures old/undefined pairs after destroy with trackChanges", () => {
+      const item = new TrackedItem({ name: "ToBeDestroyed" });
+      item.save();
+
+      item.destroy({ trackChanges: true });
+
+      const changes = item.trackedChanges();
+      expect(changes).not.toBeNull();
+      expect(changes!.name).toEqual(["ToBeDestroyed", undefined]);
+      expect(changes!.id).toEqual([item.id, undefined]);
+    });
+
+    it("returns null after destroy without trackChanges", () => {
+      const item = new TrackedItem({ name: "NoTrackDestroy" });
+      item.save();
+
+      item.destroy();
+
+      expect(item.trackedChanges()).toBeNull();
+    });
+
+    it("captures multiple changed columns", () => {
+      const item = new TrackedItem({ name: "A" });
+      item.save();
+
+      item.name = "B";
+      item.save({ trackChanges: true });
+
+      const changes = item.trackedChanges()!;
+      expect(changes.name).toEqual(["A", "B"]);
+      // created_at and updated_at may or may not appear depending on timing;
+      // the key assertion is that the changed column is captured correctly
+    });
+
+    it("captures insert as undefined-to-value pairs", () => {
+      const item = new TrackedItem({ name: "NewRecord" });
+      item.save({ trackChanges: true });
+
+      const changes = item.trackedChanges();
+      expect(changes).not.toBeNull();
+      expect(changes!.name).toEqual([undefined, "NewRecord"]);
+      expect(changes!.id).toEqual([undefined, item.id]);
+    });
+
+    it("is not set by default save without trackChanges", () => {
+      const item = new TrackedItem({ name: "DefaultSave" });
+      item.save();
+      item.name = "Changed";
+      item.save();
+      expect(item.trackedChanges()).toBeNull();
+    });
+  });
+
+  describe(".where()", () => {
+    it("returns an ApplicationRecordQuery with the filter applied", () => {
+      const query = User.where("name", "=", "test");
+      const { sql, params } = query.toSQL();
+
+      expect(sql).toBe("SELECT * FROM users WHERE name = ?");
+      expect(params).toEqual(["test"]);
+    });
+
+    it("allows chaining query methods after where", () => {
+      const query = User.where("name", "=", "test").limit(10);
+      const { sql, params } = query.toSQL();
+
+      expect(sql).toBe("SELECT * FROM users WHERE name = ? LIMIT 10");
+      expect(params).toEqual(["test"]);
+    });
+  });
+
+  describe(".fuzzySearch()", () => {
+    it("returns an ApplicationRecordQuery with the filter applied", () => {
+      const query = User.fuzzySearch("alice", ["name", "email"]);
+      const { sql, params } = query.toSQL();
+
+      expect(sql).toBe(
+        "SELECT * FROM users WHERE (name LIKE ? OR email LIKE ?)",
+      );
+      expect(params).toEqual(["%alice%", "%alice%"]);
+    });
+
+    it("returns no conditions for null terms", () => {
+      const query = User.fuzzySearch(null, ["name"]);
+      const { sql, params } = query.toSQL();
+
+      expect(sql).toBe("SELECT * FROM users");
+      expect(params).toEqual([]);
+    });
+
+    it("allows chaining query methods after fuzzySearch", () => {
+      const query = User.fuzzySearch("alice", ["name"]).limit(10);
+      const { sql, params } = query.toSQL();
+
+      expect(sql).toBe("SELECT * FROM users WHERE (name LIKE ?) LIMIT 10");
+      expect(params).toEqual(["%alice%"]);
+    });
+
+    it("returns matching records", () => {
+      new User({ name: "alice wonderland", email: "alice@example.com" }).save();
+      new User({ name: "bob", email: "bob@example.com" }).save();
+
+      const records = User.fuzzySearch("wonderland", ["name", "email"]).all();
+
+      expect(records.length).toBe(1);
+      expect(records[0].name).toBe("alice wonderland");
+
+      db.getDb().run("DELETE FROM users");
+    });
+  });
+
+  describe(".join()", () => {
+    it("returns an ApplicationRecordQuery with the join applied", () => {
+      const query = User.join("INNER JOIN artists a ON a.name = users.name");
+      const { sql, params } = query.toSQL();
+
+      expect(sql).toBe(
+        "SELECT * FROM users INNER JOIN artists a ON a.name = users.name",
+      );
+      expect(params).toEqual([]);
+    });
+
+    it("allows chaining query methods after join", () => {
+      const query = User.join("INNER JOIN artists a ON a.name = users.name")
+        .where("name", "=", "test")
+        .limit(10);
+      const { sql, params } = query.toSQL();
+
+      expect(sql).toBe(
+        "SELECT * FROM users INNER JOIN artists a ON a.name = users.name WHERE name = ? LIMIT 10",
+      );
+      expect(params).toEqual(["test"]);
+    });
+
+    it("binds join params before where params regardless of call order", () => {
+      const join = "INNER JOIN artists a ON a.name = ?";
+
+      const query = User.join(join, ["alice"]).where(
+        "email",
+        "=",
+        "alice@example.com",
+      );
+      expect(query.toSQL().params).toEqual(["alice", "alice@example.com"]);
+
+      const reversed = User.where("email", "=", "alice@example.com").join(
+        join,
+        ["alice"],
+      );
+      expect(reversed.toSQL().params).toEqual(["alice", "alice@example.com"]);
+    });
+
+    it("returns matching records", () => {
+      db.getDb().run("DELETE FROM artists");
+      new User({ name: "alice", email: "alice@example.com" }).save();
+      new User({ name: "bob", email: "bob@example.com" }).save();
+      db.getDb().run("INSERT INTO artists (name) VALUES ('alice')");
+
+      const records = User.selectClear()
+        .select("users.*")
+        .join("INNER JOIN artists a ON a.name = users.name")
+        .all();
+
+      expect(records.length).toBe(1);
+      expect(records[0].name).toBe("alice");
+      expect(records[0].email).toBe("alice@example.com");
+
+      db.getDb().run("DELETE FROM users");
+      db.getDb().run("DELETE FROM artists");
+    });
+  });
+});

@@ -5,18 +5,18 @@ use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 use std::str::FromStr;
 
 #[derive(Model, Validate, Debug, Clone, Default)]
-#[model(table = "songs")]
-struct Song {
+#[model(table = "users")]
+struct User {
     #[model(primary_key)]
     #[garde(skip)]
     id: Option<i64>,
 
     #[garde(length(min = 1, max = 200))]
-    title: String,
+    name: String,
 
     #[redacted]
     #[garde(skip)]
-    secret: Option<String>,
+    password_digest: Option<String>,
 
     #[model(column = "locked")]
     #[garde(skip)]
@@ -31,16 +31,16 @@ struct Song {
     /// Not persisted.
     #[model(virtual)]
     #[garde(skip)]
-    score: Option<i64>,
+    post_count: Option<i64>,
 }
 
-impl ModelHooks for Song {}
+impl ModelHooks for User {}
 
 async fn connection() -> SqliteConnection {
     let options = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
     let mut conn = SqliteConnection::connect_with(&options).await.unwrap();
     sqlx::raw_sql(AssertSqlSafe(
-        "CREATE TABLE songs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, secret TEXT, locked INTEGER, created_at TEXT, updated_at TEXT)"
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, password_digest TEXT, locked INTEGER, created_at TEXT, updated_at TEXT)"
             .to_string(),
     ))
     .execute(&mut conn)
@@ -51,47 +51,47 @@ async fn connection() -> SqliteConnection {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn derived_metadata_excludes_virtual_fields() {
-    assert_eq!(Song::TABLE_NAME, "songs");
+    assert_eq!(User::TABLE_NAME, "users");
     assert_eq!(
-        Song::COLUMNS,
+        User::COLUMNS,
         &[
             "id",
-            "title",
-            "secret",
+            "name",
+            "password_digest",
             "locked",
             "created_at",
             "updated_at"
         ]
     );
-    assert_eq!(Song::REDACTED_COLUMNS, &["secret"]);
+    assert_eq!(User::REDACTED_COLUMNS, &["password_digest"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn derived_crud_and_bool_mapping() {
     let mut conn = connection().await;
-    let mut song = Song {
-        title: "NIGHT OF FIRE".to_string(),
+    let mut user = User {
+        name: "Alice".to_string(),
         locked: true,
-        score: Some(42),
+        post_count: Some(42),
         ..Default::default()
     };
-    song.save(&mut conn).await.unwrap();
-    assert_eq!(song.id, Some(1));
-    assert!(!song.created_at.is_empty());
+    user.save(&mut conn).await.unwrap();
+    assert_eq!(user.id, Some(1));
+    assert!(!user.created_at.is_empty());
 
-    let found = Song::find(&mut conn, song.id.unwrap())
+    let found = User::find(&mut conn, user.id.unwrap())
         .await
         .unwrap()
         .unwrap();
     assert!(found.locked);
-    assert_eq!(found.title, "NIGHT OF FIRE");
-    assert_eq!(found.score, None);
+    assert_eq!(found.name, "Alice");
+    assert_eq!(found.post_count, None);
 
-    song.title = "Night of Fire".to_string();
-    song.save(&mut conn).await.unwrap();
+    user.name = "Alice Smith".to_string();
+    user.save(&mut conn).await.unwrap();
 
-    let query = Song::query()
-        .where_eq("title", "Night of Fire")
+    let query = User::query()
+        .where_eq("name", "Alice Smith")
         .unwrap()
         .all(&mut conn)
         .await
@@ -103,39 +103,39 @@ async fn derived_crud_and_bool_mapping() {
 async fn derived_validation_and_redaction() {
     let mut conn = connection().await;
 
-    let invalid = Song {
-        title: String::new(),
+    let invalid = User {
+        name: String::new(),
         ..Default::default()
     };
     let errors = invalid.validate(&mut conn).await.unwrap();
     assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].column, "title");
+    assert_eq!(errors[0].column, "name");
 
-    let mut song = Song {
-        title: "NIGHT OF FIRE".to_string(),
-        secret: Some("hunter2".to_string()),
+    let mut user = User {
+        name: "Alice".to_string(),
+        password_digest: Some("hunter2".to_string()),
         ..Default::default()
     };
-    assert!(song.validate(&mut conn).await.unwrap().is_empty());
-    song.save(&mut conn).await.unwrap();
+    assert!(user.validate(&mut conn).await.unwrap().is_empty());
+    user.save(&mut conn).await.unwrap();
 
-    let json = song.to_json(true);
-    assert_eq!(json["secret"], serde_json::json!("[redacted]"));
-    assert!(json.get("score").is_none());
+    let json = user.to_json(true);
+    assert_eq!(json["password_digest"], serde_json::json!("[redacted]"));
+    assert!(json.get("post_count").is_none());
 
-    let serialized = serde_json::to_value(&song).unwrap();
-    assert_eq!(serialized["title"], serde_json::json!("NIGHT OF FIRE"));
-    assert!(serialized.get("score").is_none());
+    let serialized = serde_json::to_value(&user).unwrap();
+    assert_eq!(serialized["name"], serde_json::json!("Alice"));
+    assert!(serialized.get("post_count").is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn derived_change_tracking() {
     let mut conn = connection().await;
-    let mut song = Song {
-        title: "NIGHT OF FIRE".to_string(),
+    let mut user = User {
+        name: "Alice".to_string(),
         ..Default::default()
     };
-    song.save_with_options(
+    user.save_with_options(
         &mut conn,
         average_record::SaveOptions {
             track_changes: true,
@@ -145,9 +145,9 @@ async fn derived_change_tracking() {
     .await
     .unwrap();
 
-    let changes = song.tracked_changes().unwrap();
+    let changes = user.tracked_changes().unwrap();
     assert_eq!(
-        changes.get("title").unwrap().after,
-        Some(SqlValue::Text("NIGHT OF FIRE".to_string()))
+        changes.get("name").unwrap().after,
+        Some(SqlValue::Text("Alice".to_string()))
     );
 }
