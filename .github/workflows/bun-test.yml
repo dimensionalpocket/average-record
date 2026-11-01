@@ -1,0 +1,63 @@
+name: Bun Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'bun/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'bunfig.toml'
+      - 'tsconfig.json'
+      - '.tool-versions'
+      - '.github/workflows/bun-test.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'bun/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'bunfig.toml'
+      - 'tsconfig.json'
+      - '.tool-versions'
+      - '.github/workflows/bun-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve Bun version
+        id: bun
+        run: echo "version=$(awk '$1=="bun"{print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ steps.bun.outputs.version }}
+
+      - name: Cache Bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Check formatting
+        run: bun fmt --check bun
+
+      - name: Type check
+        run: bun check
+
+      - name: Test
+        run: bun test
