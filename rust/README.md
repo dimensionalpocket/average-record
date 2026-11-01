@@ -11,6 +11,7 @@ on top of the connection you give it.
 - [Quick start](#quick-start)
 - [The connection model](#the-connection-model)
 - [Defining a model](#defining-a-model)
+- [Primary keys](#primary-keys)
 - [CRUD](#crud)
 - [Queries](#queries)
 - [Validation](#validation)
@@ -87,7 +88,7 @@ use sqlx::sqlite::SqlitePool;
 #[model(table = "users")]
 struct User {
     #[model(primary_key)]
-    id: Option<i64>,
+    id: i64,                      // 0 means "new record"
     team_id: i64,
     name: String,
     email: String,
@@ -103,7 +104,7 @@ async fn run(pool: &SqlitePool) -> Result<()> {
 
     // Create.
     let mut user = User {
-        id: None,
+        id: 0,
         team_id: 1,
         name: "Alice".into(),
         email: "alice@example.com".into(),
@@ -180,7 +181,7 @@ let mut tx = conn.begin().await?;
 let mut user = User { team_id: 1, name: "Alice".into(), ..Default::default() };
 user.save_within(&mut tx).await?;
 
-let mut review = Review { user_id: user.id.unwrap(), ..Default::default() };
+let mut review = Review { user_id: user.id, ..Default::default() };
 review.save_within(&mut tx).await?;
 
 tx.commit().await?;
@@ -205,7 +206,7 @@ use sqlx::SqliteConnection;
 #[model(table = "users")]
 pub struct User {
     #[model(primary_key)]
-    pub id: Option<i64>,
+    pub id: i64,                      // 0 means "new record"
 
     pub team_id: i64,
 
@@ -237,7 +238,7 @@ pub struct User {
 | Attribute                     | Placement | Meaning                                                                 |
 | ----------------------------- | --------- | ----------------------------------------------------------------------- |
 | `#[model(table = "users")]`   | struct    | Required. Table name.                                                   |
-| `#[model(primary_key)]`       | field     | Marks the primary key (defaults to a column named `id` if absent).      |
+| `#[model(primary_key)]`       | field     | Marks the primary key (defaults to a column named `id`). Must be `i64`; `0` means new. |
 | `#[model(column = "locked")]` | field     | Maps a Rust field to a differently named column.                        |
 | `#[model(virtual)]`           | field     | Non-persisted projection field (excluded from `COLUMNS` and writes).    |
 | `#[redacted]`                 | field     | Redacted in `to_json`, `persisted`, and `changes` when redaction is on. |
@@ -284,7 +285,7 @@ use average_record::{Model, ModelHooks, Result, SqlValue};
 use sqlx::{sqlite::SqliteRow, Row};
 
 pub struct User {
-    pub id: Option<i64>,
+    pub id: i64,
     pub team_id: i64,
     pub name: String,
     pub locked: bool,
@@ -324,10 +325,39 @@ impl Model for User {
             self.updated_at.clone().into(),
         ]
     }
+
+    fn set_primary_key(&mut self, id: i64) {
+        self.id = id;
+    }
 }
 
 impl ModelHooks for User {}
 ```
+
+---
+
+## Primary keys
+
+Primary keys are `i64` fields. **`0` always means "new record"**, and it is never a valid
+stored key: an `INSERT` omits the primary-key column so SQLite assigns the rowid (auto-assigned rowids
+start at `1`).
+
+| Operation | Behavior for a record whose primary key is `0` |
+| --- | --- |
+| `save(conn)` | INSERT; the assigned rowid is written back to the field |
+| `persisted(conn, _)` | `None` (no query issued) |
+| `changes(conn, _)` / `changed(conn)` | empty / `false` |
+| `check_uniqueness*` | no `AND pk != ?` self-exclusion clause |
+| `destroy(conn)` | `Err(Error::Record("cannot destroy an unsaved record"))` |
+| `find(conn, 0)` | `None` (short-circuit, no query) |
+
+The library never writes `0`: the `INSERT` omits the primary-key column, so the database assigns it. A
+row with `id = 0` can only appear through a write that bypasses the library; for such a row the library
+consistently treats the record as unsaved. Hosts that want to reject out-of-band writes can add
+`CHECK (id != 0)` to their schema as optional hardening.
+
+Hand-written models must implement `set_primary_key`; there is no default, so a forgotten assignment is
+a compile error rather than a silent no-op.
 
 ---
 
@@ -340,12 +370,12 @@ let mut conn = pool.acquire().await?;
 let mut user = User { team_id: 1, name: "Alice".into(), ..Default::default() };
 user.save(&mut conn).await?;
 
-// Update — same method; presence of the primary key decides INSERT vs UPDATE.
+// Update — same method; a non-zero primary key decides INSERT vs UPDATE.
 user.name = "Alice Smith".into();
 user.save(&mut conn).await?;
 
 // Read
-let found: Option<User> = User::find(&mut conn, user.id.unwrap()).await?;
+let found: Option<User> = User::find(&mut conn, user.id).await?;
 let first: Option<User> = User::first(&mut conn).await?;
 let all: Vec<User> = User::all(&mut conn).await?;
 let total: i64 = User::count(&mut conn).await?;
@@ -549,7 +579,7 @@ For the complete, always-current list and their exact arguments, see the
 ### Uniqueness helpers
 
 ```rust
-// Single column, excluding this record's own primary key.
+// Single column, excluding this record's own primary key when it is persisted.
 let unique = user.check_uniqueness(&mut conn, "name", &user.name).await?;
 
 // Arbitrary condition (any raw WHERE fragment).

@@ -102,7 +102,7 @@ impl Changes {
     }
 }
 
-type TrackedKey = (TypeId, Option<i64>);
+type TrackedKey = (TypeId, i64);
 type TrackedStore = LazyLock<Mutex<HashMap<TrackedKey, Changes>>>;
 
 /// Process-global store for the change set captured by the most recent tracked write on a record.
@@ -110,15 +110,18 @@ type TrackedStore = LazyLock<Mutex<HashMap<TrackedKey, Changes>>>;
 /// Models are plain structs and cannot carry hidden per-instance state, so tracked changes are
 /// keyed by `(model type, primary key)`. `tracked_changes()` reads the entry for the record's
 /// current primary key; entries are overwritten on each tracked write.
+///
+/// `0` is never a persisted key: tracked changes for an insert are stored **after**
+/// `set_primary_key`, so they land under the database-assigned id.
 static TRACKED: TrackedStore = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-pub(crate) fn store_tracked(model: TypeId, id: Option<i64>, changes: Changes) {
+pub(crate) fn store_tracked(model: TypeId, id: i64, changes: Changes) {
     if let Ok(mut map) = TRACKED.lock() {
         map.insert((model, id), changes);
     }
 }
 
-pub(crate) fn load_tracked(model: TypeId, id: Option<i64>) -> Option<Changes> {
+pub(crate) fn load_tracked(model: TypeId, id: i64) -> Option<Changes> {
     TRACKED
         .lock()
         .ok()

@@ -11,7 +11,8 @@ use syn::{Data, DeriveInput, Fields, Type, parse_macro_input};
 /// - `#[model(table = "users")]` — required table name.
 ///
 /// Field attributes:
-/// - `#[model(primary_key)]` — marks the primary key (defaults to a field named `id`).
+/// - `#[model(primary_key)]` — marks the primary key (defaults to a field named `id`). Must be a
+///   plain `i64`; `0` means "new record".
 /// - `#[model(column = "locked")]` — maps a Rust field to a differently named column.
 /// - `#[model(virtual)]` — non-persisted projection field.
 /// - `#[redacted]` — redacted in `to_json`, `persisted`, and `changes`.
@@ -81,6 +82,13 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         })?;
     let primary_ident = &primary.ident;
     let primary_column = primary.column.clone();
+
+    if !is_i64(&primary.ty) {
+        return Err(syn::Error::new_spanned(
+            &primary.ident,
+            "#[derive(Model)] primary key must be a plain `i64` (`0` means new); `Option<i64>` is no longer supported",
+        ));
+    }
 
     let persisted: Vec<&FieldInfo> = fields.iter().filter(|field| !field.is_virtual).collect();
     let columns: Vec<&str> = persisted
@@ -175,12 +183,12 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                 vec![#(#to_values),*]
             }
 
-            fn primary_key_value(&self) -> ::std::option::Option<i64> {
+            fn primary_key_value(&self) -> i64 {
                 self.#primary_ident
             }
 
             fn set_primary_key(&mut self, id: i64) {
-                self.#primary_ident = ::std::option::Option::Some(id);
+                self.#primary_ident = id;
             }
 
             fn set_column(&mut self, column: &str, value: average_record::SqlValue) {
@@ -332,6 +340,15 @@ fn has_garde_attributes(input: &DeriveInput) -> bool {
 
 fn is_string_type(ty: &Type) -> bool {
     matches!(ty, Type::Path(path) if path.path.is_ident("String"))
+}
+
+fn is_i64(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Path(path)
+            if path.qself.is_none()
+                && path.path.segments.last().is_some_and(|s| s.ident == "i64")
+    )
 }
 
 fn is_option_string(ty: &Type) -> bool {

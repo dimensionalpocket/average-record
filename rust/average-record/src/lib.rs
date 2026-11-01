@@ -14,11 +14,11 @@
 //! # use sqlx::SqliteConnection;
 //! # #[derive(Model)]
 //! # #[model(table = "users")]
-//! # struct User { #[model(primary_key)] id: Option<i64>, name: String }
+//! # struct User { #[model(primary_key)] id: i64, name: String }
 //! # impl ModelHooks for User {}
 //! # async fn example(conn: &mut SqliteConnection, mut user: User) -> Result<()> {
 //! user.save(conn).await?;
-//! let found = User::find(conn, user.id.unwrap_or_default()).await?;
+//! let found = User::find(conn, user.id).await?;
 //! # let _ = found;
 //! # Ok(())
 //! # }

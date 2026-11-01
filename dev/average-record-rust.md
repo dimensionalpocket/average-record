@@ -1,5 +1,9 @@
 # average-record-rust — conversion analysis & plan
 
+> **Note (0.2.0):** this design document predates the non-optional primary-key contract. Every
+> `id: Option<i64>` snippet below now reads `id: i64`, where `0` means "new record"; hand-written
+> models also implement `set_primary_key(&mut self, id: i64)`. See `rust/README.md` → "Primary keys".
+
 ## The public README (contract artifact)
 
 The crate folder `components/average-record/` (note: not `average-record-rust` — the folder will

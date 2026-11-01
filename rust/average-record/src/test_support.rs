@@ -52,7 +52,7 @@ pub async fn memory_connection() -> SqliteConnection {
 /// A hand-written test model covering a broad column set.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TestModel {
-    pub id: Option<i64>,
+    pub id: i64,
     pub name: String,
     pub status: String,
     pub role: Option<String>,
@@ -103,12 +103,12 @@ impl Model for TestModel {
         ]
     }
 
-    fn primary_key_value(&self) -> Option<i64> {
+    fn primary_key_value(&self) -> i64 {
         self.id
     }
 
     fn set_primary_key(&mut self, id: i64) {
-        self.id = Some(id);
+        self.id = id;
     }
 
     fn set_column(&mut self, column: &str, value: SqlValue) {
@@ -133,7 +133,7 @@ impl ModelHooks for TestModel {}
 /// A model whose hooks record their invocation order.
 #[derive(Debug, Clone, Default)]
 pub struct HookModel {
-    pub id: Option<i64>,
+    pub id: i64,
     pub name: String,
 }
 
@@ -152,12 +152,12 @@ impl Model for HookModel {
         vec![self.id.into(), self.name.clone().into()]
     }
 
-    fn primary_key_value(&self) -> Option<i64> {
+    fn primary_key_value(&self) -> i64 {
         self.id
     }
 
     fn set_primary_key(&mut self, id: i64) {
-        self.id = Some(id);
+        self.id = id;
     }
 }
 
@@ -196,7 +196,7 @@ impl ModelHooks for HookModel {
 /// A model that rejects every save through `validate_custom`.
 #[derive(Debug, Clone, Default)]
 pub struct ValidatedModel {
-    pub id: Option<i64>,
+    pub id: i64,
     pub name: String,
 }
 
@@ -206,7 +206,7 @@ impl Model for ValidatedModel {
 
     fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self> {
         Ok(Self {
-            id: row.try_get("id").ok(),
+            id: row.try_get("id").unwrap_or(0),
             name: row.try_get("name").unwrap_or_default(),
         })
     }
@@ -215,12 +215,12 @@ impl Model for ValidatedModel {
         vec![self.id.into(), self.name.clone().into()]
     }
 
-    fn primary_key_value(&self) -> Option<i64> {
+    fn primary_key_value(&self) -> i64 {
         self.id
     }
 
     fn set_primary_key(&mut self, id: i64) {
-        self.id = Some(id);
+        self.id = id;
     }
 }
 

@@ -8,6 +8,15 @@ type ModelConstructor = new (
 ) => ApplicationRecord;
 
 /**
+ * Returns true when a record has not been persisted yet: the primary key is absent, `null`, or `0`.
+ * `0` is never a stored key — `save()` omits the primary-key column on insert, so the database
+ * assigns the rowid.
+ */
+function isNewRecord(record: Record<string, unknown>, pk: string): boolean {
+  return record[pk] == null || record[pk] === 0;
+}
+
+/**
  * Base class for database models. Subclasses define `tableName`, `schema`, and `database`.
  * The `schema` property must be a Valibot object schema defining the model's columns.
  *
@@ -155,16 +164,17 @@ export class ApplicationRecord {
     // Only set timestamps for new records; DB rows already have them
     const Ctor = this.constructor as typeof ApplicationRecord;
     const pk = Ctor.primaryKey;
-    if (record[pk] == null) {
+    if (isNewRecord(record, pk)) {
       this.setTimestamps();
     }
   }
 
-  /** Fetches a single record by primary key. Returns null if not found. */
+  /** Fetches a single record by primary key. Returns null if not found or if `id` is `0`. */
   static find<T extends typeof ApplicationRecord>(
     this: T,
     id: number,
   ): InstanceType<T> | null {
+    if (id === 0) return null;
     const pk = this.primaryKey;
     const table = this.tableName;
     const row = this.database
@@ -245,14 +255,17 @@ export class ApplicationRecord {
     ) as InstanceType<T>;
   }
 
-  /** Inserts a new record or updates an existing one based on primary key presence. */
+  /**
+   * Inserts a new record or updates an existing one. A primary key of `0` (or absent/null) means
+   * "new": the insert omits the primary-key column so the database assigns it.
+   */
   save(options?: SaveOptions): this {
     const Ctor = this.constructor as typeof ApplicationRecord;
     const record = this as Record<string, unknown>;
     const pk = Ctor.primaryKey;
     const table = Ctor.tableName;
     const schema = Ctor.schema.entries;
-    const isNew = record[pk] == null;
+    const isNew = isNewRecord(record, pk);
 
     let before: Record<string, unknown> | undefined;
     if (options?.trackChanges) {
@@ -276,12 +289,16 @@ export class ApplicationRecord {
     }
 
     if (isNew) {
-      const placeholders = columns.map(() => "?").join(", ");
-      const sql = `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`;
+      // Never bind `0`: omit the primary-key column so SQLite assigns the rowid. Binding a
+      // literal `0` would persist rowid `0` and `lastInsertRowid` would return `0`.
+      const insertColumns = columns.filter((col) => col !== pk);
+      const insertValues = insertColumns.map((col) => parsed[col]) as any[];
+      const placeholders = insertColumns.map(() => "?").join(", ");
+      const sql = `INSERT INTO ${table} (${insertColumns.join(", ")}) VALUES (${placeholders})`;
       const result = Ctor.database
         .getDb()
         .query(sql)
-        .run(...values);
+        .run(...insertValues);
       record[pk] = result.lastInsertRowid;
       if (options?.trackChanges) this._captureChanges(before);
       this.afterCreate();
@@ -307,7 +324,7 @@ export class ApplicationRecord {
     const record = this as Record<string, unknown>;
     const schema = Ctor.schema.entries;
     const pk = Ctor.primaryKey;
-    const isNew = record[pk] == null;
+    const isNew = isNewRecord(record, pk);
     const now = new Date().toISOString();
 
     if ("created_at" in schema && isNew && record.created_at == null) {
@@ -341,7 +358,7 @@ export class ApplicationRecord {
     const Ctor = this.constructor as typeof ApplicationRecord;
     const record = this as Record<string, unknown>;
     const pk = Ctor.primaryKey;
-    if (record[pk] == null) return null;
+    if (isNewRecord(record, pk)) return null;
     const table = Ctor.tableName;
     const row = Ctor.database
       .getDb()
@@ -382,18 +399,27 @@ export class ApplicationRecord {
     this._trackedChanges = Object.keys(changes).length > 0 ? changes : null;
   }
 
-  /** Deletes the record from the database by primary key. */
+  /**
+   * Deletes the record from the database by primary key.
+   *
+   * Throws when the record has not been persisted yet (`0`/absent/null primary key), mirroring the
+   * Rust implementation.
+   */
   destroy(options?: SaveOptions): void {
     const Ctor = this.constructor as typeof ApplicationRecord;
+    const record = this as Record<string, unknown>;
     const pk = Ctor.primaryKey;
     const table = Ctor.tableName;
+    if (isNewRecord(record, pk)) {
+      throw new Error("cannot destroy an unsaved record");
+    }
     if (options?.trackChanges) {
       this._captureChanges(this.toJSON(), {});
     }
     Ctor.database
       .getDb()
       .query(`DELETE FROM ${table} WHERE ${pk} = ?`)
-      .run((this as Record<string, unknown>)[pk] as any);
+      .run(record[pk] as any);
     this.afterDestroy();
   }
 
@@ -448,7 +474,7 @@ export class ApplicationRecord {
 
   /**
    * Checks if a value is unique for the given field.
-   * Excludes the current record to avoid false positives when updating existing records.
+   * Excludes the current record, when persisted, to avoid false positives when updating.
    * Returns true if the value is unique and available to use.
    */
   checkUniqueness(field: string, value: unknown): boolean {
@@ -460,7 +486,7 @@ export class ApplicationRecord {
     const params: any[] = [value];
 
     const record = this as Record<string, unknown>;
-    if (record[pk] != null) {
+    if (!isNewRecord(record, pk)) {
       query += ` AND ${pk} != ?`;
       params.push(record[pk]);
     }
@@ -474,7 +500,7 @@ export class ApplicationRecord {
 
   /**
    * Checks uniqueness with a raw SQL WHERE condition (no table prefix).
-   * Excludes the current record by primary key.
+   * Excludes the current record by primary key when it is persisted.
    * Returns true if the combination is unique and available to use.
    */
   checkUniquenessRaw(condition: string, params: unknown[] = []): boolean {
@@ -486,7 +512,7 @@ export class ApplicationRecord {
     const allParams: unknown[] = [...params];
 
     const record = this as Record<string, unknown>;
-    if (record[pk] != null) {
+    if (!isNewRecord(record, pk)) {
       query += ` AND ${pk} != ?`;
       allParams.push(record[pk]);
     }

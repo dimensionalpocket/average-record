@@ -44,42 +44,40 @@ pub trait Model: Sized + Send + 'static {
     /// Returns the persisted field values, in exactly the order of [`Model::COLUMNS`].
     fn to_values(&self) -> Vec<SqlValue>;
 
-    /// Returns the primary-key value, or `None` for an unsaved record.
+    /// Returns the primary-key value, or `0` for an unsaved record.
     ///
     /// The default implementation reads the [`Model::PRIMARY_KEY`] column from
     /// [`Model::to_values`]; derived models override it with direct field access.
-    fn primary_key_value(&self) -> Option<i64> {
-        let index = Self::COLUMNS
+    ///
+    /// `0` is never a valid stored key: an `INSERT` omits the primary-key column so the database
+    /// assigns it, and SQLite auto-assigned rowids start at `1`.
+    fn primary_key_value(&self) -> i64 {
+        Self::COLUMNS
             .iter()
-            .position(|column| *column == Self::PRIMARY_KEY)?;
-        self.to_values()
-            .into_iter()
-            .nth(index)
+            .position(|column| *column == Self::PRIMARY_KEY)
+            .and_then(|index| self.to_values().into_iter().nth(index))
             .and_then(|value| value.as_i64())
+            .unwrap_or(0)
     }
 
     /// Sets the primary-key value (called after an `INSERT`).
     ///
-    /// The default implementation delegates to [`Model::set_column`]; derived models override it
-    /// with direct field access. Hand-written models must implement [`Model::set_column`] for the
-    /// primary key (and for `created_at`/`updated_at`) to support writes.
-    fn set_primary_key(&mut self, id: i64) {
-        self.set_column(Self::PRIMARY_KEY, SqlValue::Integer(id));
-    }
+    /// There is no default: hand-written models must assign their own field so primary-key
+    /// assignment after an insert can never silently no-op. Derived models are implemented by the
+    /// macro.
+    fn set_primary_key(&mut self, id: i64);
 
-    /// Sets a persisted column from a [`SqlValue`]. Used internally by automatic timestamps and
-    /// primary-key assignment.
+    /// Sets a persisted column from a [`SqlValue`]. Used internally by automatic timestamps.
     ///
-    /// The derive macro implements this for the primary key and for `String`/`Option<String>`
-    /// columns. Hand-written models must implement it to participate in automatic
-    /// `created_at`/`updated_at` management and post-insert primary-key assignment.
+    /// The derive macro implements this for `String` and `Option<String>` columns. Hand-written
+    /// models must implement it to participate in automatic `created_at`/`updated_at` management.
     fn set_column(&mut self, column: &str, value: SqlValue) {
         let _ = (column, value);
     }
 
-    /// Returns `true` when the record has no primary key yet.
+    /// Returns `true` when the primary key is `0`.
     fn is_new(&self) -> bool {
-        self.primary_key_value().is_none()
+        self.primary_key_value() == 0
     }
 
     /// Returns the current value of a persisted column, if it is one.
@@ -102,7 +100,12 @@ pub trait Model: Sized + Send + 'static {
     }
 
     /// Fetches a single record by primary key, or `None`.
+    ///
+    /// `0` is never a stored key, so `find(conn, 0)` returns `None` without querying.
     async fn find(conn: &mut SqliteConnection, id: i64) -> Result<Option<Self>> {
+        if id == 0 {
+            return Ok(None);
+        }
         Self::query()
             .where_eq(Self::PRIMARY_KEY, id)?
             .first(conn)
@@ -167,9 +170,10 @@ pub trait Model: Sized + Send + 'static {
         conn: &mut SqliteConnection,
         redact: bool,
     ) -> Result<Option<ValueMap>> {
-        let Some(id) = self.primary_key_value() else {
+        if self.is_new() {
             return Ok(None);
-        };
+        }
+        let id = self.primary_key_value();
         let sql = format!(
             "SELECT * FROM {} WHERE {} = ?",
             Self::TABLE_NAME,
@@ -244,9 +248,9 @@ pub trait Model: Sized + Send + 'static {
         let column = column.into();
         let mut sql = format!("SELECT 1 FROM {} WHERE {} = ?", Self::TABLE_NAME, column);
         let mut params = vec![value.into()];
-        if let Some(id) = self.primary_key_value() {
+        if !self.is_new() {
             sql.push_str(&format!(" AND {} != ?", Self::PRIMARY_KEY));
-            params.push(SqlValue::Integer(id));
+            params.push(SqlValue::Integer(self.primary_key_value()));
         }
         let mut query = sqlx::query::<Sqlite>(AssertSqlSafe(sql));
         for param in params {
@@ -273,9 +277,9 @@ pub trait Model: Sized + Send + 'static {
             condition.into()
         );
         let mut params: Vec<SqlValue> = params.into_iter().map(Into::into).collect();
-        if let Some(id) = self.primary_key_value() {
+        if !self.is_new() {
             sql.push_str(&format!(" AND {} != ?", Self::PRIMARY_KEY));
-            params.push(SqlValue::Integer(id));
+            params.push(SqlValue::Integer(self.primary_key_value()));
         }
         let mut query = sqlx::query::<Sqlite>(AssertSqlSafe(sql));
         for param in params {
@@ -356,15 +360,26 @@ pub trait Model: Sized + Send + 'static {
         }
 
         if is_new {
-            let placeholders = vec!["?"; Self::COLUMNS.len()].join(", ");
+            // Never write `0`: omit the primary-key column so SQLite assigns the rowid. Binding a
+            // literal `0` would persist rowid `0` and `last_insert_rowid()` would return `0`.
+            let mut columns: Vec<&str> = Self::COLUMNS.to_vec();
+            let mut insert_values = values;
+            if let Some(index) = columns
+                .iter()
+                .position(|column| *column == Self::PRIMARY_KEY)
+            {
+                columns.remove(index);
+                insert_values.remove(index);
+            }
+            let placeholders = vec!["?"; columns.len()].join(", ");
             let sql = format!(
                 "INSERT INTO {} ({}) VALUES ({})",
                 Self::TABLE_NAME,
-                Self::COLUMNS.join(", "),
+                columns.join(", "),
                 placeholders
             );
             let mut query = sqlx::query::<Sqlite>(AssertSqlSafe(sql));
-            for value in values {
+            for value in insert_values {
                 query = query.bind(value);
             }
             let result = query.execute(&mut **tx).await?;
@@ -381,9 +396,7 @@ pub trait Model: Sized + Send + 'static {
                 assignments,
                 Self::PRIMARY_KEY
             );
-            let id = self
-                .primary_key_value()
-                .ok_or_else(|| Error::Record("missing primary key for update".to_string()))?;
+            let id = self.primary_key_value();
             let mut query = sqlx::query::<Sqlite>(AssertSqlSafe(sql));
             for value in values {
                 query = query.bind(value);
@@ -449,9 +462,12 @@ pub trait Model: Sized + Send + 'static {
     where
         Self: ModelHooks,
     {
-        let id = self.primary_key_value().ok_or_else(|| {
-            Error::Record("cannot destroy a record without a primary key".to_string())
-        })?;
+        if self.is_new() {
+            return Err(Error::Record(
+                "cannot destroy an unsaved record".to_string(),
+            ));
+        }
+        let id = self.primary_key_value();
 
         if options.track_changes {
             let entries = Self::COLUMNS
@@ -464,7 +480,7 @@ pub trait Model: Sized + Send + 'static {
                 .collect();
             store_tracked(
                 TypeId::of::<Self>(),
-                Some(id),
+                id,
                 Changes::with_redacted(entries, Self::REDACTED_COLUMNS),
             );
         }
@@ -610,7 +626,7 @@ mod tests {
         };
         model.save(&mut conn).await.unwrap();
 
-        assert_eq!(model.id, Some(1));
+        assert_eq!(model.id, 1);
         assert!(!model.created_at.is_empty());
         assert_eq!(model.created_at, model.updated_at);
     }
@@ -628,10 +644,7 @@ mod tests {
         model.name = "bar".to_string();
         model.save(&mut conn).await.unwrap();
 
-        let found = TestModel::find(&mut conn, model.id.unwrap())
-            .await
-            .unwrap()
-            .unwrap();
+        let found = TestModel::find(&mut conn, model.id).await.unwrap().unwrap();
         assert_eq!(found.name, "bar");
     }
 
@@ -657,10 +670,7 @@ mod tests {
             .await
             .unwrap();
 
-        let found = TestModel::find(&mut conn, model.id.unwrap())
-            .await
-            .unwrap()
-            .unwrap();
+        let found = TestModel::find(&mut conn, model.id).await.unwrap().unwrap();
         assert_eq!(found.updated_at, "fixed");
     }
 
@@ -918,7 +928,7 @@ mod tests {
             ..Default::default()
         };
         model.save_within(&mut tx).await.unwrap();
-        assert_eq!(model.id, Some(1));
+        assert_eq!(model.id, 1);
         tx.rollback().await.unwrap();
 
         assert_eq!(TestModel::count(&mut conn).await.unwrap(), 0);

@@ -5,7 +5,7 @@ use average_record::{Model, ModelHooks, Result, SqlValue};
 use sqlx::{Row, sqlite::SqliteRow};
 
 pub struct User {
-    pub id: Option<i64>,
+    pub id: i64,
     pub team_id: i64,
     pub name: String,
     pub locked: bool,
@@ -50,6 +50,10 @@ impl Model for User {
             self.updated_at.clone().into(),
         ]
     }
+
+    fn set_primary_key(&mut self, id: i64) {
+        self.id = id;
+    }
 }
 
 impl ModelHooks for User {}
@@ -59,7 +63,7 @@ fn manual_model_matches_the_documented_shape() {
     assert_eq!(User::COLUMNS.len(), 6);
     assert_eq!(User::query().to_sql().sql, "SELECT * FROM users");
     let user = User {
-        id: None,
+        id: 0,
         team_id: 1,
         name: "Alice".to_string(),
         locked: true,
@@ -68,5 +72,6 @@ fn manual_model_matches_the_documented_shape() {
         team_name: None,
     };
     assert!(user.is_new());
+    assert_eq!(user.primary_key_value(), 0);
     assert_eq!(user.to_values().len(), User::COLUMNS.len());
 }

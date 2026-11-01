@@ -9,7 +9,7 @@ use std::str::FromStr;
 struct User {
     #[model(primary_key)]
     #[garde(skip)]
-    id: Option<i64>,
+    id: i64,
 
     #[garde(length(min = 1, max = 200))]
     name: String,
@@ -76,13 +76,10 @@ async fn derived_crud_and_bool_mapping() {
         ..Default::default()
     };
     user.save(&mut conn).await.unwrap();
-    assert_eq!(user.id, Some(1));
+    assert_eq!(user.id, 1);
     assert!(!user.created_at.is_empty());
 
-    let found = User::find(&mut conn, user.id.unwrap())
-        .await
-        .unwrap()
-        .unwrap();
+    let found = User::find(&mut conn, user.id).await.unwrap().unwrap();
     assert!(found.locked);
     assert_eq!(found.name, "Alice");
     assert_eq!(found.post_count, None);
@@ -150,4 +147,40 @@ async fn derived_change_tracking() {
         changes.get("name").unwrap().after,
         Some(SqlValue::Text("Alice".to_string()))
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn zero_primary_key_is_treated_as_new() {
+    let mut conn = connection().await;
+    let mut user = User {
+        id: 0,
+        name: "Zero".to_string(),
+        ..Default::default()
+    };
+    assert!(user.is_new());
+    assert!(user.persisted(&mut conn, false).await.unwrap().is_none());
+    assert!(user.changes(&mut conn, false).await.unwrap().is_empty());
+
+    user.save(&mut conn).await.unwrap();
+    assert_eq!(user.id, 1);
+    assert!(!user.is_new());
+    assert_eq!(User::count(&mut conn).await.unwrap(), 1);
+    assert!(User::find(&mut conn, 0).await.unwrap().is_none());
+
+    // A second save updates the assigned row rather than inserting a duplicate.
+    user.name = "Zero Updated".to_string();
+    user.save(&mut conn).await.unwrap();
+    assert_eq!(User::count(&mut conn).await.unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn destroy_rejects_an_unsaved_record() {
+    let mut conn = connection().await;
+    let mut user = User {
+        name: "Unsaved".to_string(),
+        ..Default::default()
+    };
+    let error = user.destroy(&mut conn).await.unwrap_err();
+    assert!(matches!(error, average_record::Error::Record(_)));
+    assert_eq!(User::count(&mut conn).await.unwrap(), 0);
 }

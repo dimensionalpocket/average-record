@@ -141,7 +141,9 @@ export class ApplicationRecordQuery<M extends typeof ApplicationRecord> {
     return this;
   }
 
+  /** Fetches a single record by primary key. Returns null if not found or if `id` is `0`. */
   find(id: number): InstanceType<M> | null {
+    if (id === 0) return null;
     return this.where(this.model.primaryKey, "=", id).first();
   }
 

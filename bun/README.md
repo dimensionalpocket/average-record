@@ -87,6 +87,28 @@ class User extends ApplicationRecord {
 }
 ```
 
+### Primary Keys
+
+`0`, `null`, and an absent key all mean "new record". `save()` treats such a record as an insert and
+**omits the primary-key column**, so SQLite assigns the rowid; the library never writes `0`. A record
+is persisted once its primary key is non-zero.
+
+```typescript
+const user = new User({ id: 0, name: "Alice", email: "alice@example.com" });
+
+user.persisted(); // null (id 0 means new)
+User.find(0); // null (0 is never a stored key)
+
+user.save(); // INSERT without the id column; user.id is assigned (1, 2, ...)
+user.save(); // UPDATE (the id is now non-zero)
+
+user.destroy(); // DELETE
+```
+
+`destroy()` on an unsaved record throws `cannot destroy an unsaved record`. A row with `id = 0` can
+only appear through a write that bypasses the library; hosts that want to reject those can add
+`CHECK (id != 0)` to their schema.
+
 ### CRUD Operations
 
 ```typescript
@@ -297,7 +319,7 @@ const user = new User({ email: "alice@test.com" });
 const errors = await user.validate(); // schema errors + custom errors
 ```
 
-`checkUniqueness(field, value)` returns `true` if the value is unique and available to use. It automatically excludes the current record when updating.
+`checkUniqueness(field, value)` returns `true` if the value is unique and available to use. It automatically excludes the current record when updating (that is, when its primary key is non-zero).
 
 `checkUniquenessRaw(condition, params)` takes an arbitrary WHERE condition (no table prefix) for multi-column checks, for example `checkUniquenessRaw("remote_id = ? AND platform = ?", [this.remote_id, this.platform])`. It excludes the current record by primary key the same way.
 

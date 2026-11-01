@@ -104,6 +104,10 @@ describe("ApplicationRecord", () => {
       const user = User.find(999);
       expect(user).toBeNull();
     });
+
+    it("returns null for id 0", () => {
+      expect(User.find(0)).toBeNull();
+    });
   });
 
   describe(".allRaw()", () => {
@@ -305,6 +309,29 @@ describe("ApplicationRecord", () => {
       expect(updated.name).toBe("Chuck");
     });
 
+    it("inserts a record whose id is 0 and receives a new id", () => {
+      const before = User.count();
+      const user = new User({
+        id: 0,
+        name: "ZeroId",
+        email: "zero@example.com",
+      });
+      user.save();
+
+      expect(user.id).toBeGreaterThan(0);
+      expect(User.count()).toBe(before + 1);
+      expect(User.find(0)).toBeNull();
+      expect(
+        db.getDb().query("SELECT id FROM users WHERE id = 0").all(),
+      ).toHaveLength(0);
+
+      // A second save updates the assigned row rather than inserting a duplicate.
+      user.name = "ZeroIdUpdated";
+      user.save();
+      expect(User.count()).toBe(before + 1);
+      expect(User.find(user.id)!.name).toBe("ZeroIdUpdated");
+    });
+
     it("applies defaults on insert", () => {
       class DefaultUser extends ApplicationRecord {
         static database = db;
@@ -449,6 +476,14 @@ describe("ApplicationRecord", () => {
       expect(model.created_at).toBe(past);
     });
 
+    it("treats id 0 as new and sets timestamps", () => {
+      const model = new TimestampedModel({ id: 0, name: "ZeroTimestamped" });
+      expect(model.created_at).toBeDefined();
+      expect(model.updated_at).toBeDefined();
+      model.save();
+      expect(model.id).toBeGreaterThan(0);
+    });
+
     it("does nothing when schema has no timestamp columns", () => {
       const model = new NoTimestampModel({ name: "NoTimestamps" });
       model.save();
@@ -464,11 +499,32 @@ describe("ApplicationRecord", () => {
       const found = User.find(user.id!);
       expect(found).toBeNull();
     });
+
+    it("throws for an unsaved record", () => {
+      const before = User.count();
+      const user = new User({ name: "Unsaved", email: "unsaved@example.com" });
+      expect(() => user.destroy()).toThrow("cannot destroy an unsaved record");
+      expect(User.count()).toBe(before);
+    });
+
+    it("throws for a record whose id is 0", () => {
+      const user = new User({
+        id: 0,
+        name: "ZeroDestroy",
+        email: "zerodestroy@example.com",
+      });
+      expect(() => user.destroy()).toThrow("cannot destroy an unsaved record");
+    });
   });
 
   describe("#persisted()", () => {
     it("returns null for new record", () => {
       const user = new User({ name: "New", email: "new@example.com" });
+      expect(user.persisted()).toBeNull();
+    });
+
+    it("returns null for a record whose id is 0", () => {
+      const user = new User({ id: 0, name: "Zero", email: "zero@example.com" });
       expect(user.persisted()).toBeNull();
     });
 
@@ -1037,6 +1093,14 @@ describe("ApplicationRecord", () => {
 
       expect(existing.checkUniqueness("name", "OwnValue")).toBe(true);
     });
+
+    it("treats id 0 as new and does not exclude a matching row", () => {
+      const existing = new TestArtist({ name: "ZeroUniqueness" });
+      existing.save();
+
+      const zero = new TestArtist({ id: 0, name: "ZeroUniqueness" });
+      expect(zero.checkUniqueness("name", "ZeroUniqueness")).toBe(false);
+    });
   });
 
   describe("#checkUniquenessRaw()", () => {
@@ -1076,6 +1140,14 @@ describe("ApplicationRecord", () => {
       existing.save();
 
       expect(existing.checkUniquenessRaw("name = ?", ["ComboOwn"])).toBe(true);
+    });
+
+    it("treats id 0 as new and does not exclude a matching row", () => {
+      const existing = new TestArtist({ name: "ComboZero" });
+      existing.save();
+
+      const zero = new TestArtist({ id: 0, name: "ComboZero" });
+      expect(zero.checkUniquenessRaw("name = ?", ["ComboZero"])).toBe(false);
     });
 
     it("supports multi-column conditions", () => {

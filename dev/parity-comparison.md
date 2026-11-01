@@ -58,6 +58,11 @@ the CLI flag set (`--dump`, `--down`, `-v`, `--help`).
 
 Neither implementation wraps a migration in a transaction.
 
+Both implementations share the primary-key contract (0.2.0 in Rust): `0` means "new". Neither ever
+writes a literal `0` — inserts omit the primary-key column so the database assigns the rowid. Bun also
+accepts `null`/absent as "new" because its schema types are optional; Rust has no such state. `destroy()`
+on an unsaved record errors in both.
+
 ## Naming differences (not gaps)
 
 | Concept | Rust | Bun |
