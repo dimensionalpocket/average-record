@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/dimensionalpocket/average-record/compare/0.4.0...0.5.0) (2026-11-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* code-based validation errors replace messages
+
+### Features
+
+* code-based validation errors replace messages ([e964545](https://github.com/dimensionalpocket/average-record/commit/e964545cb507595d92e99b528d3f0590ae8c1486))
+
 ## [0.4.0](https://github.com/dimensionalpocket/average-record/compare/0.3.0...0.4.0) (2026-11-02)
 
 
