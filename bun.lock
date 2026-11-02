@@ -6,8 +6,8 @@
       "name": "@dimensionalpocket/average-record",
       "dependencies": {
         "@dimensionalpocket/tagged-logger": "github:dimensionalpocket/tagged-logger#0.1.0",
-        "deep-object-diff": "1.1.9",
-        "valibot": "1.4.1",
+        "deep-object-diff": "^1.1.9",
+        "valibot": "^1.4.1",
       },
       "devDependencies": {
         "@types/bun": "^1.4.4",
