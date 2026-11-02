@@ -78,7 +78,7 @@ function isUnsetTimestamp(
  * }
  *
  * const user = new User({ name: "Alice" });
- * user.save();
+ * await user.save();
  * const found = User.find(user.id);
  * const all = User.all();
  * user.destroy();
@@ -312,14 +312,25 @@ export class ApplicationRecord {
   /**
    * Inserts a new record or updates an existing one. A primary key of `0` (or absent/null) means
    * "new": the insert omits the primary-key column so the database assigns it.
+   *
+   * Validates the record first — schema rules then `validateCustom()` — and throws a
+   * {@link RecordInvalid} carrying the errors. Nothing is written and no hook runs when the
+   * record is invalid.
    */
-  save(options?: SaveOptions): this {
+  async save(options?: SaveOptions): Promise<this> {
     const Ctor = this.constructor as typeof ApplicationRecord;
     const record = this as Record<string, unknown>;
     const pk = Ctor.primaryKey;
     const table = Ctor.tableName;
     const schema = Ctor.schema.entries;
     const isNew = isNewRecord(record, pk);
+
+    const result = v.safeParse(Ctor.schema, record);
+    const errors: ValidationError[] = [
+      ...(result.success ? [] : result.issues.map(toValidationError)),
+      ...(await this.validateCustom()),
+    ];
+    if (!result.success || errors.length > 0) throw new RecordInvalid(errors);
 
     let before: Record<string, unknown> | undefined;
     if (options?.trackChanges) {
@@ -334,7 +345,11 @@ export class ApplicationRecord {
 
     this.setTimestamps({ updatedAt: !options?.skipUpdatedAt });
 
-    const parsed = v.parse(Ctor.schema, record);
+    // Re-read after the hooks and timestamps so their changes are persisted.
+    const reparsed = v.safeParse(Ctor.schema, record);
+    if (!reparsed.success)
+      throw new RecordInvalid(reparsed.issues.map(toValidationError));
+    const parsed = reparsed.output as Record<string, unknown>;
     const columns = Object.keys(schema);
     const values = columns.map((col) => parsed[col]) as any[];
 
@@ -599,7 +614,7 @@ export class ApplicationRecord {
    *   protected async validateCustom() {
    *     const errors: ValidationError[] = [];
    *     const existing = User.all().find((u) => u.email === this.email && u.id !== this.id);
-   *     if (existing) errors.push({ column: "email", message: "is already taken" });
+   *     if (existing) errors.push({ column: "email", code: "taken" });
    *     return errors;
    *   }
    * }
@@ -614,29 +629,98 @@ export class ApplicationRecord {
     const Ctor = this.constructor as typeof ApplicationRecord;
     const record = this as Record<string, unknown>;
     const result = v.safeParse(Ctor.schema, record);
+    const errors = result.success ? [] : result.issues.map(toValidationError);
 
-    let errors: ValidationError[] = [];
-
-    if (!result.success) {
-      errors = result.issues.map((issue) => ({
-        column: issue.path?.map((p: any) => p.key ?? p.value).join(".") ?? "",
-        message: issue.message,
-      }));
-    }
-
-    const customErrors = await this.validateCustom();
-    if (customErrors.length > 0) {
-      errors = errors.concat(customErrors);
-    }
-
-    return errors;
+    return errors.concat(await this.validateCustom());
   }
 }
 
 /** Validation error returned by `validate()` and `validateCustom()`. */
 export interface ValidationError {
+  /** The offending column, or a dot-joined path for nested data (`author.name`, `tags.0`). */
   column: string;
-  message: string;
+  /**
+   * Stable, translatable identifier: `"length"`, `"required"`, `"email"`, or a model-defined code
+   * from `validateCustom()`. No human-readable text is produced by this library.
+   */
+  code: string;
+  /**
+   * Interpolation values for the host's translation, for example `{ min: 3 }`. Never contains the
+   * submitted value, so the array can be returned to a client verbatim.
+   */
+  params?: Record<string, unknown>;
+}
+
+/** Thrown by `save()` when schema or custom validation fails. Carries the full error array. */
+export class RecordInvalid extends Error {
+  readonly errors: ValidationError[];
+
+  constructor(errors: ValidationError[]) {
+    super(
+      `validation failed: ${errors.length} error${errors.length === 1 ? "" : "s"}`,
+    );
+    this.name = "RecordInvalid";
+    this.errors = errors;
+  }
+}
+
+/**
+ * Maps a Valibot issue onto the shared `{ code, params }` vocabulary.
+ *
+ * Rules with two bounds collapse onto one code (`minLength`/`maxLength` → `length`) and the bound
+ * that fired is described by `params`, matching the Rust implementation.
+ */
+function classifyIssue(issue: v.BaseIssue<unknown>): {
+  code: string;
+  params?: Record<string, unknown>;
+} {
+  const { requirement, received, expected } = issue as {
+    requirement?: unknown;
+    received?: string;
+    expected?: string;
+  };
+
+  switch (issue.type) {
+    case "min_length":
+      return { code: "length", params: { min: requirement } };
+    case "max_length":
+      return { code: "length", params: { max: requirement } };
+    case "length":
+      return { code: "length", params: { equal: requirement } };
+    case "non_empty":
+      return { code: "length", params: { min: 1 } };
+    case "min_value":
+      return { code: "range", params: { min: requirement } };
+    case "max_value":
+      return { code: "range", params: { max: requirement } };
+    case "includes":
+      return { code: "contains", params: { needle: requirement } };
+    case "email":
+    case "url":
+    case "regex":
+      return { code: issue.type };
+    default:
+      // `schema` issues are datatype mismatches. A missing value is a `required` failure; any
+      // other mismatch is the client sending the wrong type.
+      if (issue.kind === "schema") {
+        return received === "undefined"
+          ? { code: "required" }
+          : { code: "type", params: { expected } };
+      }
+      return { code: issue.type };
+  }
+}
+
+/** Maps a Valibot issue to a `ValidationError`, dropping the submitted value. */
+function toValidationError(issue: v.BaseIssue<unknown>): ValidationError {
+  const column =
+    issue.path?.map((item) => item.key ?? item.value).join(".") ?? "";
+  const { code, params } = classifyIssue(issue);
+
+  if (params === undefined || Object.keys(params).length === 0) {
+    return { column, code };
+  }
+  return { column, code, params };
 }
 
 /** Memoized redacted column names per subclass. Keys are subclass constructors. */

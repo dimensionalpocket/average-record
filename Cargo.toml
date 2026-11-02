@@ -14,7 +14,6 @@ average-record-derive = { path = "rust/average-record-derive" }
 clap = { version = "4", features = ["derive"] }
 futures-core = "0.3"
 futures-util = "0.3"
-garde = { version = "0.23", default-features = false, features = ["derive"] }
 proc-macro2 = "1"
 quote = "1"
 serde = { version = "1", features = ["derive"] }
@@ -24,3 +23,4 @@ syn = { version = "2", features = ["full"] }
 thiserror = "2"
 tokio = { version = "1", default-features = false, features = ["rt", "sync", "time"] }
 tracing = "0.1"
+validator = { version = "0.21", features = ["derive"] }

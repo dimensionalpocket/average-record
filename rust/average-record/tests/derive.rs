@@ -1,36 +1,36 @@
-use average_record::{Model, ModelHooks, SqlValue, Timestamps};
-use garde::Validate;
+use average_record::{Error, Model, ModelHooks, SqlValue, Timestamps};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 use std::str::FromStr;
+use validator::Validate;
 
 #[derive(Model, Validate, Debug, Clone, Default)]
 #[model(table = "users")]
 struct User {
     #[model(primary_key)]
-    #[garde(skip)]
+    #[validate(skip)]
     id: i64,
 
-    #[garde(length(min = 1, max = 200))]
+    #[validate(length(min = 1, max = 200))]
     name: String,
 
     #[redacted]
-    #[garde(skip)]
+    #[validate(skip)]
     password_digest: Option<String>,
 
     #[model(column = "locked")]
-    #[garde(skip)]
+    #[validate(skip)]
     locked: bool,
 
-    #[garde(skip)]
+    #[validate(skip)]
     created_at: String,
 
-    #[garde(skip)]
+    #[validate(skip)]
     updated_at: String,
 
     /// Not persisted.
     #[model(virtual)]
-    #[garde(skip)]
+    #[validate(skip)]
     post_count: Option<i64>,
 }
 
@@ -165,6 +165,15 @@ async fn derived_validation_and_redaction() {
     let errors = invalid.validate(&mut conn).await.unwrap();
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].column, "name");
+    assert_eq!(errors[0].code, "length");
+    // Interpolation values for the host's translation; the submitted value is never echoed back.
+    assert_eq!(errors[0].params["min"], serde_json::json!(1));
+    assert_eq!(errors[0].params["max"], serde_json::json!(200));
+    assert!(!errors[0].params.contains_key("value"));
+
+    let serialized = serde_json::to_value(&errors).unwrap();
+    assert_eq!(serialized[0]["column"], serde_json::json!("name"));
+    assert_eq!(serialized[0]["code"], serde_json::json!("length"));
 
     let mut user = User {
         name: "Alice".to_string(),
@@ -181,6 +190,26 @@ async fn derived_validation_and_redaction() {
     let serialized = serde_json::to_value(&user).unwrap();
     assert_eq!(serialized["name"], serde_json::json!("Alice"));
     assert!(serialized.get("post_count").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn derived_field_rules_abort_the_save() {
+    let mut conn = connection().await;
+    let mut invalid = User {
+        name: String::new(),
+        ..Default::default()
+    };
+
+    let error = invalid.save(&mut conn).await.unwrap_err();
+    match error {
+        Error::Validation(errors) => {
+            assert_eq!(errors.len(), 1);
+            assert_eq!(errors[0].column, "name");
+            assert_eq!(errors[0].code, "length");
+        }
+        other => panic!("expected Error::Validation, got {other:?}"),
+    }
+    assert_eq!(User::count(&mut conn).await.unwrap(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

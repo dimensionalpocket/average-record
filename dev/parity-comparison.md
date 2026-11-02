@@ -41,7 +41,7 @@ design choice, except `backupToFile`, which has no Rust equivalent at any layer.
 | **Placeholder arity validation**: `where_raw` and `join` error when the `?` count differs from the parameter count | `rust/average-record/src/query.rs` | Bun silently accepts mismatched params. |
 | `order_by_raw(expr, dir)` | `rust/average-record/src/query.rs` | Order by an alias or subquery; Bun only has `orderBy(column, dir)`. |
 | **Virtual/projection fields** (`#[model(virtual)]`) | `rust/average-record/src/model.rs` | A projection (`s.score`) can hydrate a typed field and is excluded from `COLUMNS` and writes. Bun maps rows to instances by schema keys, so extra selected columns are dropped; only raw rows see them. |
-| Typed error enum: `Error::{Validation, Sqlite, Io, Migration, Record}` returned from every API | `rust/average-record/src/error.rs` | Bun's `save()` throws raw Valibot errors; only `validate()` returns an array. |
+| Typed error enum: `Error::{Validation, Sqlite, Io, Migration, Record}` returned from every API | `rust/average-record/src/error.rs` | Bun throws plain `Error` subclasses (`RecordInvalid` carries the array); there is no single typed enum over every failure mode. |
 | Models implemented without the derive macro | `rust/average-record/src/model.rs` | Macro-free escape hatch; Bun's class model is inherently manual. |
 
 ## Parity (no gap, despite surface differences)
@@ -51,7 +51,9 @@ automatic timestamps (configurable per model: `Model::TIMESTAMPS` ≡ `static ti
 ISO-8601 text default and an epoch-millisecond integer option in both), `find`/`first`/`all`/`count`, streaming (`each`/`eachRaw` ≡
 `fetch`/`fetch_raw`), raw rows (`allRaw` ≡ `all_raw`), `select`/`selectClear`/`join`, fuzzy search
 (raw SQL fragments with `?` patterns allowed as search columns in **both**), `IN`/`NOT IN`,
-`limit`/`offset`, validation (Valibot vs garde) plus `validateCustom` and uniqueness checks
+`limit`/`offset`, validation (Valibot vs validator) plus `validateCustom` and uniqueness checks,
+`save()` running field rules and custom checks before writing and rejecting invalid records with
+codes/params in both (Bun `RecordInvalid`, Rust `Error::Validation`)
 (including the raw-condition variant), redaction (schema metadata vs `#[redacted]`, applied in
 `toJSON`/`persisted`/`changes`), before/after change capture including deletes, all six lifecycle
 hooks, migrations (`up`/`down`/version/`dump`/`silent`/`pwd`/`schemaPath`, `schema_migrations`), and
@@ -71,7 +73,7 @@ on an unsaved record errors in both.
 | Query entry | `Model::query()` | `Model.scope()` |
 | Comparison helpers | `where_eq`, `where_gt`, … | `where(col, op, value)` |
 | Redaction source | `#[redacted]` field attribute | `v.metadata({ redacted: true })` |
-| Validation rules | `#[garde(...)]` | Valibot schema |
+| Validation rules | `#[validate(...)]` | Valibot schema |
 | Timestamp config | `Model::TIMESTAMPS` (`Timestamps` presets / derive attribute) | `static timestamps` (`Timestamps` presets) |
 
 ## If this is ever acted on

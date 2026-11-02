@@ -3,6 +3,7 @@ export { BunSqliteDatabase } from "./src/BunSqliteDatabase";
 export {
   ApplicationRecord,
   redactedCache,
+  RecordInvalid,
   Timestamps,
 } from "./src/ApplicationRecord";
 export type { TimestampConfig, ValidationError } from "./src/ApplicationRecord";

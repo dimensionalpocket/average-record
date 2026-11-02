@@ -33,7 +33,7 @@ Or add it to `package.json` directly:
 ## Features
 
 - **Lazy connection**: Database connects only on first query
-- **Synchronous API**: No `async/await` overhead; queries block the event loop
+- **Synchronous queries**: Reads and writes block the event loop rather than returning promises; `save()` is `async` because it runs validation first
 - **Valibot schemas**: Validation and type inference powered by Valibot
 - **Type-safe models**: Generic attributes for TypeScript support
 - **Fluent query builder**: Chainable `where()`, `orderBy()`, `limit()` and more via `ApplicationRecordQuery`
@@ -99,8 +99,8 @@ const user = new User({ id: 0, name: "Alice", email: "alice@example.com" });
 user.persisted(); // null (id 0 means new)
 User.find(0); // null (0 is never a stored key)
 
-user.save(); // INSERT without the id column; user.id is assigned (1, 2, ...)
-user.save(); // UPDATE (the id is now non-zero)
+await user.save(); // INSERT without the id column; user.id is assigned (1, 2, ...)
+await user.save(); // UPDATE (the id is now non-zero)
 
 user.destroy(); // DELETE
 ```
@@ -161,7 +161,7 @@ DDL: `TEXT` for ISO-8601, `INTEGER` for epoch milliseconds.
 ```typescript
 // Create
 const user = new User({ name: "Alice", email: "alice@example.com" });
-user.save();
+await user.save();
 
 // Read
 const found = User.find(user.id);
@@ -180,7 +180,7 @@ for (const rawRow of User.eachRaw()) {
 
 // Update
 found!.name = "Alice Smith";
-found!.save();
+await found!.save();
 
 // Destroy
 found!.destroy();
@@ -202,7 +202,7 @@ const safeDiff = user.changes(true); // redacted columns become "[redacted]"
 const isDirty = user.changed();
 
 // Recorded change history from the last tracked write
-user.save({ trackChanges: true });
+await user.save({ trackChanges: true });
 const tracked = user.trackedChanges(); // { name: ["New Name", "Newer Name"] }, or null
 // Inserts record [undefined, value], updates [before, after], and
 // destroy({ trackChanges: true }) records [value, undefined].
@@ -328,26 +328,78 @@ const latest = User.orderBy("created_at", "DESC").first();
 
 ### Validation
 
-Use `validate()` to check an instance against its schema before saving:
+`validate()` checks an instance against its Valibot schema plus `validateCustom()`:
 
 ```typescript
-const user = new User({ name: "", email: "invalid" });
-const errors = await user.validate();
-// [
-//   { column: "name", message: "String must contain at least 1 character(s)" },
-//   { column: "email", message: "Invalid email" }
-// ]
+class Signup extends ApplicationRecord {
+  static schema = v.object({
+    id: v.optional(v.number()),
+    name: v.pipe(v.string(), v.minLength(1)),
+    email: v.pipe(v.string(), v.email()),
+  });
+}
 
-if (errors.length > 0) {
-  // handle errors
+const signup = new Signup({ name: "", email: "invalid" });
+const errors = await signup.validate();
+// [
+//   { column: "name", code: "length", params: { min: 1 } },
+//   { column: "email", code: "email" }
+// ]
+```
+
+Each error carries a `column`, a machine-readable `code`, and optional `params` for interpolation.
+The library never produces human-readable text, so the host owns translation and can return the
+array to a client verbatim; `params` never contains the submitted value.
+
+Multiple errors can target the same column — one per failed rule. Returns an empty array when valid.
+Nested schemas produce dot-joined paths (`author.name`, `tags.1`), and a struct-level `v.check`
+failure uses an empty `column`.
+
+#### Codes
+
+Valibot issue types are mapped onto a shared vocabulary, so the same failure reads the same in both
+implementations:
+
+| Code                      | Valibot source                                    | `params`                 |
+| ------------------------- | ------------------------------------------------- | ------------------------ |
+| `required`                | any datatype issue with `undefined` input         | —                        |
+| `type`                    | any other datatype issue                          | `expected`               |
+| `length`                  | `minLength` / `maxLength` / `length` / `nonEmpty` | `min`, `max`, or `equal` |
+| `range`                   | `minValue` / `maxValue`                           | `min` and/or `max`       |
+| `email` / `url` / `regex` | the action of the same name                       | —                        |
+| `contains`                | `includes`                                        | `needle`                 |
+| _your choice_             | `validateCustom()`                                | whatever you attach      |
+
+Codes returned from `validateCustom()` are your own vocabulary. `type` only ever comes from this
+implementation: Rust fields are statically typed, so it can never see the wrong datatype.
+
+#### Saving
+
+`save()` validates before writing — schema rules first, then `validateCustom()` — and throws
+`RecordInvalid` carrying the errors. Nothing is written and no hook runs when the record is invalid:
+
+```typescript
+import { RecordInvalid } from "@dimensionalpocket/average-record";
+
+try {
+  await user.save();
+} catch (error) {
+  if (error instanceof RecordInvalid) {
+    // error.errors is the same array validate() returns
+    return new Response(JSON.stringify({ errors: error.errors }), {
+      status: 422,
+    });
+  }
+  throw error;
 }
 ```
 
-Multiple errors can target the same column. Returns an empty array when valid.
+Call `save()` with `await`: it is asynchronous so that `validateCustom()` can run first.
 
 ### Custom Validation
 
-Override `validateCustom()` to add model-specific validations (uniqueness, conditional checks, etc.):
+Override `validateCustom()` to add model-specific validations (uniqueness, conditional checks, etc.).
+It runs from both `validate()` and `save()`:
 
 ```typescript
 class User extends ApplicationRecord {
@@ -356,7 +408,7 @@ class User extends ApplicationRecord {
   protected async validateCustom() {
     const errors: ValidationError[] = [];
     if (!this.checkUniqueness("email", this.email)) {
-      errors.push({ column: "email", message: "is already taken" });
+      errors.push({ column: "email", code: "taken" });
     }
     return errors;
   }
@@ -372,7 +424,8 @@ const errors = await user.validate(); // schema errors + custom errors
 
 ### Lifecycle Hooks
 
-`save()` and `destroy()` call lifecycle hooks at specific points. Override these in subclasses:
+`save()` validates first — schema rules then `validateCustom()` — and throws `RecordInvalid`
+without calling any hook when the record is invalid.
 
 **Save hooks** (called in order):
 
@@ -417,12 +470,12 @@ class User extends ApplicationRecord {
 }
 
 const user = new User({ name: "Alice" });
-user.save();
-// beforeCreate → insert → afterCreate → afterSave
+await user.save();
+// validate → beforeCreate → insert → afterCreate → afterSave
 
 user.name = "Alice Smith";
-user.save();
-// beforeUpdate → update → afterUpdate → afterSave
+await user.save();
+// validate → beforeUpdate → update → afterUpdate → afterSave
 
 user.destroy();
 // delete → afterDestroy

@@ -230,7 +230,7 @@ impl Model for ValidatedModel {
 
 impl ModelHooks for ValidatedModel {
     async fn validate_custom(&self, _conn: &mut SqliteConnection) -> Result<Vec<ValidationError>> {
-        Ok(vec![ValidationError::new("name", "is not allowed")])
+        Ok(vec![ValidationError::new("name", "not_allowed")])
     }
 }
 

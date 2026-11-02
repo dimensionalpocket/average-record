@@ -199,7 +199,7 @@ own transaction around the save.
 
 ```rust
 use average_record::{Model, ModelHooks, ValidationError, Result};
-use garde::Validate;
+use validator::Validate;
 use sqlx::SqliteConnection;
 
 #[derive(Model, Validate, Default)]
@@ -210,7 +210,7 @@ pub struct User {
 
     pub team_id: i64,
 
-    #[garde(length(min = 1, max = 200))]
+    #[validate(length(min = 1, max = 200))]
     pub name: String,
 
     #[redacted]
@@ -244,7 +244,7 @@ pub struct User {
 | `#[model(column = "locked")]` | field     | Maps a Rust field to a differently named column.                        |
 | `#[model(virtual)]`           | field     | Non-persisted projection field (excluded from `COLUMNS` and writes).    |
 | `#[redacted]`                 | field     | Redacted in `to_json`, `persisted`, and `changes` when redaction is on. |
-| `#[garde(...)]`               | field     | Field validation rules (from `garde`).                                  |
+| `#[validate(...)]`            | field     | Field validation rules (from `validator`).                              |
 
 `#[derive(Model)]` also derives `serde::Serialize`, which `to_json` and `TrackedChanges::to_json`
 require. If you implement `Model` by hand (below), derive `Serialize` yourself.
@@ -270,14 +270,14 @@ impl ModelHooks for User {
         // DB-dependent checks run inside the write transaction.
         let mut errors = Vec::new();
         if !self.check_uniqueness(conn, "name", &self.name).await? {
-            errors.push(ValidationError::new("name", "is already taken"));
+            errors.push(ValidationError::new("name", "taken"));
         }
         Ok(errors)
     }
 }
 ```
 
-Hook order on a write: `validate_custom` → `before_create`/`before_update` → timestamps → DML →
+Hook order on a write: field rules → `validate_custom` → `before_create`/`before_update` → timestamps → DML →
 `after_create`/`after_update` → `after_save`. On delete: DML → `after_destroy`.
 
 ### Without the derive macro
@@ -623,43 +623,100 @@ assert_eq!(generated.sql, "SELECT * FROM users WHERE team_id = ?");
 
 ## Validation
 
-`validate(conn)` combines declarative field rules (via `garde`) with `validate_custom`, running on
-the same connection. It returns all errors (empty means valid).
+Validation produces data, not prose. Every failure is a `ValidationError` carrying the offending
+`column`, a machine-readable `code`, and optional `params` for interpolation. The crate never
+produces human-readable messages: the host owns translation, and the array can be returned to a
+client verbatim.
+
+```rust
+pub struct ValidationError {
+    pub column: String,   // "name", or a path such as "author.name" / "tags.0"
+    pub code: String,     // "length", "required", "email", or a model-defined code
+    pub params: serde_json::Map<String, serde_json::Value>, // {"min": 3}; empty when unused
+}
+```
+
+`validate(conn)` runs declarative field rules and `validate_custom` on the same connection and
+returns every error (empty means valid):
 
 ```rust
 let errors = user.validate(&mut conn).await?;
 for error in &errors {
-    eprintln!("{}: {}", error.column, error.message);
+    eprintln!("{}: {} {:?}", error.column, error.code, error.params);
 }
+// ValidationError { column: "name", code: "length", params: {"max": 200, "min": 1} }
 ```
 
-`save` and `save_within` invoke `validate_custom` inside the write transaction and return
-`Error::Validation(Vec<ValidationError>)` when a custom check fails. A common controller flow is to
-call `validate` first to surface field errors to the client, then `save`.
+One column can appear more than once — once per failed rule. `params` never contains the submitted
+value, so nothing sensitive can leak through it.
 
-### Field rules (`garde`)
+`save` and `save_within` run that same combination inside the write transaction: a record that fails
+a field rule is not written, no hook runs, and the call returns
+`Error::Validation(Vec<ValidationError>)`. Use `validate` when you want to report errors without
+attempting a write.
 
-Declarative rules are attached with `#[garde(...)]` on the struct fields. A few common ones:
+### Field rules (`validator`)
+
+Declarative rules come from [`validator`](https://docs.rs/validator) and are attached with
+`#[validate(...)]`; the struct needs `#[derive(validator::Validate)]`.
 
 | Rule | Example | Checks |
 | --- | --- | --- |
-| `required` | `#[garde(required)]` | an `Option` field is `Some` |
-| `length` | `#[garde(length(min = 1, max = 200))]` | string/container length in `min..=max` (or `equal`) |
-| `range` | `#[garde(range(min = 0, max = 100))]` | a number in `min..=max` (or `equal`) |
-| `email` | `#[garde(email)]` | an HTML5 email address |
-| `url` | `#[garde(url)]` | a URL |
-| `pattern` | `#[garde(pattern(r"^[a-z0-9_]+$"))]` | a string matching a regular expression |
-| `contains` / `prefix` / `suffix` | `#[garde(prefix("https://"))]` | a substring / prefix / suffix |
-| `matches` | `#[garde(matches(password))]` | a field equals another field |
-| `ascii` / `alphanumeric` | `#[garde(alphanumeric)]` | ASCII-only / letters-and-digits-only |
-| `ip` / `ipv4` / `ipv6` | `#[garde(ipv4)]` | an IP address of the given family |
-| `dive` / `custom` / `skip` | `#[garde(skip)]` | nested validation / custom fn / opt out |
+| `required` | `#[validate(required)]` | an `Option` field is `Some` |
+| `length` | `#[validate(length(min = 1, max = 200))]` | string/container length in `min..=max` (or `equal`) |
+| `range` | `#[validate(range(min = 0, max = 100))]` | a number in `min..=max` |
+| `email` | `#[validate(email)]` | an HTML5 email address |
+| `url` | `#[validate(url)]` | a URL |
+| `regex` | `#[validate(regex(path = *NAME_RE))]` | a string matching a compiled regex |
+| `contains` | `#[validate(contains(pattern = "https://"))]` | a substring |
+| `must_match` | `#[validate(must_match(other = "password"))]` | a field equals another field |
+| `custom` | `#[validate(custom(function = "check_name"))]` | a function returning `Result<(), ValidationError>` |
+| `non_control_character` | `#[validate(non_control_character)]` | printable text only |
+| `nested` / `skip` | `#[validate(skip)]` | nested struct/list validation / opt out |
 
-Feature-gated rules: `email`, `url`, `pattern` (regex), `credit_card`, `phone_number`. Enable them
-in your own `Cargo.toml` (for example `garde = { version = "0.23", features = ["email", "url", "regex"] }`).
+`credit_card` is available behind validator's `card` feature. For the complete, always-current list
+and its exact arguments, see the [`validator` crate docs](https://docs.rs/validator).
 
-For the complete, always-current list and their exact arguments, see the
-[`garde` "Available validation rules" table](https://docs.rs/garde/0.23.0/garde/#available-validation-rules).
+### Codes
+
+Internal rules map to these codes; anything you return from `custom` rules or `validate_custom` is
+your own vocabulary.
+
+| Code | Source rule | `params` |
+| --- | --- | --- |
+| `required` | `required` | — |
+| `length` | `length` | `min`, `max`, or `equal` |
+| `range` | `range` | `min` and/or `max` |
+| `email` / `url` / `regex` / `contains` / `must_match` / `non_control_character` / `credit_card` | the rule of the same name | `needle` for `contains`, `other` for `must_match` |
+| *your choice* | `custom` rules and `validate_custom` | whatever you attach |
+
+When both bounds on a `length`/`range` rule are set, they are reported together (`{"min": 1,
+"max": 200}`) and the host renders a "between" message; the failing bound is not distinguished.
+
+### Custom validation
+
+Database-dependent checks stay in `ModelHooks::validate_custom`, which runs inside the write
+transaction. Return a code (and optionally params) for each failure:
+
+```rust
+impl ModelHooks for User {
+    async fn validate_custom(&self, conn: &mut SqliteConnection) -> Result<Vec<ValidationError>> {
+        if !self.check_uniqueness(conn, "name", &self.name).await? {
+            return Ok(vec![
+                ValidationError::new("name", "taken").with_param("table", "users"),
+            ]);
+        }
+        Ok(Vec::new())
+    }
+}
+```
+
+### Nested models
+
+`#[validate(nested)]` on a nested struct or `Vec` flattens into dot-joined column paths
+(`author.name`, `tags.1`) and struct-level failures use an empty `column`. The Bun implementation
+uses the same convention, and maps its Valibot issues onto the same codes (`min_length`/`max_length`
+→ `length`, missing input → `required`, datatype mismatch → `type`).
 
 ### Uniqueness helpers
 

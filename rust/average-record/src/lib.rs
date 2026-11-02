@@ -60,8 +60,9 @@ pub use migrations::{MigrationDirection, Migrator, MigratorOptions};
 /// Implementation details re-exported for the derive macro. Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
-    pub use garde;
+    pub use crate::validation::collect as validation_errors;
     pub use serde;
     pub use serde_json;
     pub use sqlx;
+    pub use validator;
 }
