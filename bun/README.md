@@ -11,7 +11,7 @@ Pin a tag:
 <!-- x-release-please-start-version -->
 
 ```bash
-bun add github:dimensionalpocket/average-record#0.2.0
+bun add github:dimensionalpocket/average-record#0.3.0
 ```
 
 <!-- x-release-please-end -->
@@ -23,7 +23,7 @@ Or add it to `package.json` directly:
 ```json
 {
   "dependencies": {
-    "@dimensionalpocket/average-record": "github:dimensionalpocket/average-record#0.2.0"
+    "@dimensionalpocket/average-record": "github:dimensionalpocket/average-record#0.3.0"
   }
 }
 ```
