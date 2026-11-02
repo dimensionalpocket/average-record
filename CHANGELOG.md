@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/dimensionalpocket/average-record/compare/0.3.0...0.4.0) (2026-11-02)
+
+
+### Features
+
+* configurable timestamps with epoch-millisecond support ([703c8b3](https://github.com/dimensionalpocket/average-record/commit/703c8b346116e915b4108c42aa7036127057c5b6))
+
 ## [0.3.0](https://github.com/dimensionalpocket/average-record/compare/0.2.0...0.3.0) (2026-11-02)
 
 
