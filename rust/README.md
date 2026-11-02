@@ -55,7 +55,7 @@ tag:
 <!-- x-release-please-start-version -->
 ```toml
 [dependencies]
-average-record = { git = "https://github.com/dimensionalpocket/average-record", tag = "0.1.0", features = ["derive"] }
+average-record = { git = "https://github.com/dimensionalpocket/average-record", tag = "0.2.0", features = ["derive"] }
 ```
 <!-- x-release-please-end -->
 
