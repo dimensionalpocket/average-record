@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/dimensionalpocket/average-record/compare/0.2.0...0.3.0) (2026-11-02)
+
+
+### Features
+
+* relax dependency version constraints for library consumers ([85e81d0](https://github.com/dimensionalpocket/average-record/commit/85e81d09f961d8afa59e3aa373f6aae84166f37b))
+
 ## [0.2.0](https://github.com/dimensionalpocket/average-record/compare/0.1.0...0.2.0) (2026-11-01)
 
 
