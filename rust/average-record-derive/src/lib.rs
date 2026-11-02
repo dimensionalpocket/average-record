@@ -9,6 +9,11 @@ use syn::{Data, DeriveInput, Fields, Type, parse_macro_input};
 ///
 /// Struct attributes:
 /// - `#[model(table = "users")]` — required table name.
+/// - `#[model(timestamps = "iso8601" | "epoch_millis" | "none")]` — where and how timestamps are
+///   written. `iso8601` (the default) uses `created_at`/`updated_at` as `String`; `epoch_millis`
+///   uses `created_ts`/`updated_ts` as `i64`; `none` disables them.
+/// - `#[model(timestamps(created = "...", updated = "...", format = "..."))]` — custom column names.
+///   An omitted `created`/`updated` disables that column; `format` defaults to `iso8601`.
 ///
 /// Field attributes:
 /// - `#[model(primary_key)]` — marks the primary key (defaults to a field named `id`). Must be a
@@ -38,7 +43,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    let table = struct_table(&input)?;
+    let StructOptions { table, timestamps } = struct_options(&input)?;
 
     let Data::Struct(data) = &input.data else {
         return Err(syn::Error::new_spanned(
@@ -101,6 +106,15 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         .map(|field| field.column.as_str())
         .collect();
 
+    validate_timestamps(name, &persisted, &timestamps)?;
+    let timestamp_columns = [timestamps.created.as_deref(), timestamps.updated.as_deref()];
+    let created_column = option_str(&timestamps.created);
+    let updated_column = option_str(&timestamps.updated);
+    let timestamp_format = match timestamps.format {
+        TimestampFormat::Iso8601 => quote!(Iso8601),
+        TimestampFormat::EpochMillis => quote!(EpochMillis),
+    };
+
     let from_row_fields = fields.iter().map(|field| {
         let ident = &field.ident;
         let column = &field.column;
@@ -138,6 +152,26 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                     self.#ident = value.as_str().map(str::to_string);
                 }
             })
+        } else if timestamp_columns.contains(&Some(column.as_str())) {
+            // Integer timestamp columns. Scoped to the configured timestamp columns so other
+            // numeric columns do not become settable through `set_column`.
+            if is_i64(&field.ty) {
+                Some(quote! {
+                    #column => {
+                        if let Some(value) = value.as_i64() {
+                            self.#ident = value;
+                        }
+                    }
+                })
+            } else if is_option_i64(&field.ty) {
+                Some(quote! {
+                    #column => {
+                        self.#ident = value.as_i64();
+                    }
+                })
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -171,6 +205,11 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             const PRIMARY_KEY: &'static str = #primary_column;
             const COLUMNS: &'static [&'static str] = &[#(#columns),*];
             const REDACTED_COLUMNS: &'static [&'static str] = &[#(#redacted),*];
+            const TIMESTAMPS: average_record::Timestamps = average_record::Timestamps {
+                created: #created_column,
+                updated: #updated_column,
+                format: average_record::TimestampFormat::#timestamp_format,
+            };
 
             fn from_row(row: &average_record::__private::sqlx::sqlite::SqliteRow) -> average_record::Result<Self> {
                 use average_record::__private::sqlx::Row as _;
@@ -229,29 +268,211 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     Ok(expanded)
 }
 
-fn struct_table(input: &DeriveInput) -> syn::Result<String> {
+/// Struct-level options parsed from `#[model(...)]`.
+struct StructOptions {
+    table: String,
+    timestamps: TimestampSpec,
+}
+
+/// Timestamp columns and representation, as configured by `#[model(timestamps = ...)]`.
+struct TimestampSpec {
+    created: Option<String>,
+    updated: Option<String>,
+    format: TimestampFormat,
+    /// Whether configured columns must exist in `COLUMNS` and match the format.
+    ///
+    /// Off for the implicit default and the `none` preset (every model has that default, including
+    /// models with no timestamp columns at all). On for anything the model author opted into.
+    strict: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TimestampFormat {
+    Iso8601,
+    EpochMillis,
+}
+
+impl TimestampSpec {
+    /// The default column pair for a format.
+    fn for_format(format: TimestampFormat) -> Self {
+        match format {
+            TimestampFormat::Iso8601 => Self {
+                created: Some("created_at".to_string()),
+                updated: Some("updated_at".to_string()),
+                format,
+                strict: true,
+            },
+            TimestampFormat::EpochMillis => Self {
+                created: Some("created_ts".to_string()),
+                updated: Some("updated_ts".to_string()),
+                format,
+                strict: true,
+            },
+        }
+    }
+}
+
+impl Default for TimestampSpec {
+    /// The implicit default for every derived model: ISO-8601 columns when they exist.
+    fn default() -> Self {
+        Self {
+            created: Some("created_at".to_string()),
+            updated: Some("updated_at".to_string()),
+            format: TimestampFormat::Iso8601,
+            strict: false,
+        }
+    }
+}
+
+fn struct_options(input: &DeriveInput) -> syn::Result<StructOptions> {
     for attr in &input.attrs {
         if !attr.path().is_ident("model") {
             continue;
         }
         let mut table = None;
+        let mut timestamps = TimestampSpec::default();
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("table") {
                 let value: syn::LitStr = meta.value()?.parse()?;
                 table = Some(value.value());
                 Ok(())
+            } else if meta.path.is_ident("timestamps") {
+                timestamps = parse_timestamps(&meta)?;
+                Ok(())
             } else {
-                Err(meta.error("unknown #[model(...)] option on the struct; expected `table`"))
+                Err(meta.error(
+                    "unknown #[model(...)] option on the struct; expected `table` or `timestamps`",
+                ))
             }
         })?;
         if let Some(table) = table {
-            return Ok(table);
+            return Ok(StructOptions { table, timestamps });
         }
     }
     Err(syn::Error::new_spanned(
         &input.ident,
         "#[derive(Model)] requires #[model(table = \"...\")]",
     ))
+}
+
+fn parse_timestamps(meta: &syn::meta::ParseNestedMeta) -> syn::Result<TimestampSpec> {
+    if !meta.input.peek(syn::token::Paren) {
+        let preset: syn::LitStr = meta.value()?.parse()?;
+        return match preset.value().as_str() {
+            "iso8601" => Ok(TimestampSpec::default()),
+            "epoch_millis" => Ok(TimestampSpec::for_format(TimestampFormat::EpochMillis)),
+            "none" => Ok(TimestampSpec {
+                created: None,
+                updated: None,
+                format: TimestampFormat::Iso8601,
+                strict: false,
+            }),
+            other => Err(syn::Error::new_spanned(
+                &preset,
+                format!(
+                    "unknown timestamps preset `{other}`; expected `iso8601`, `epoch_millis`, or `none`"
+                ),
+            )),
+        };
+    }
+
+    // `timestamps(created = "...", updated = "...", format = "...")`.
+    let mut created = None;
+    let mut updated = None;
+    let mut format = TimestampFormat::Iso8601;
+    meta.parse_nested_meta(|inner| {
+        if inner.path.is_ident("created") {
+            created = Some(inner.value()?.parse::<syn::LitStr>()?.value());
+        } else if inner.path.is_ident("updated") {
+            updated = Some(inner.value()?.parse::<syn::LitStr>()?.value());
+        } else if inner.path.is_ident("format") {
+            let value: syn::LitStr = inner.value()?.parse()?;
+            format = match value.value().as_str() {
+                "iso8601" => TimestampFormat::Iso8601,
+                "epoch_millis" => TimestampFormat::EpochMillis,
+                other => {
+                    return Err(inner.error(format!(
+                        "unknown timestamp format `{other}`; expected `iso8601` or `epoch_millis`"
+                    )));
+                }
+            };
+        } else {
+            return Err(inner
+                .error("unknown `timestamps` option; expected `created`, `updated`, or `format`"));
+        }
+        Ok(())
+    })?;
+
+    // A bare `timestamps(format = "...")` would otherwise disable both columns; fall back to the
+    // format's preset names. Once either column is named, an omitted one means "disabled".
+    if created.is_none() && updated.is_none() {
+        return Ok(TimestampSpec::for_format(format));
+    }
+    Ok(TimestampSpec {
+        created,
+        updated,
+        format,
+        strict: true,
+    })
+}
+
+fn validate_timestamps(
+    name: &syn::Ident,
+    persisted: &[&FieldInfo],
+    spec: &TimestampSpec,
+) -> syn::Result<()> {
+    if !spec.strict {
+        return Ok(());
+    }
+    if let (Some(created), Some(updated)) = (&spec.created, &spec.updated)
+        && created == updated
+    {
+        return Err(syn::Error::new_spanned(
+            name,
+            format!(
+                "#[derive(Model)] timestamps: `created` and `updated` both point at `{created}`; use two distinct columns"
+            ),
+        ));
+    }
+
+    for column in [spec.created.as_deref(), spec.updated.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        let Some(field) = persisted.iter().find(|field| field.column == column) else {
+            return Err(syn::Error::new_spanned(
+                name,
+                format!(
+                    "#[derive(Model)] timestamps: `{column}` is not a persisted column of `{name}`"
+                ),
+            ));
+        };
+        let matches = match spec.format {
+            TimestampFormat::Iso8601 => is_string_type(&field.ty) || is_option_string(&field.ty),
+            TimestampFormat::EpochMillis => is_i64(&field.ty) || is_option_i64(&field.ty),
+        };
+        if !matches {
+            let (kind, expected) = match spec.format {
+                TimestampFormat::Iso8601 => ("ISO-8601", "`String` or `Option<String>`"),
+                TimestampFormat::EpochMillis => ("epoch-millisecond", "`i64` or `Option<i64>`"),
+            };
+            return Err(syn::Error::new_spanned(
+                &field.ident,
+                format!(
+                    "#[derive(Model)] timestamps: `{column}` is an {kind} timestamp, so it must be {expected}"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Builds an `Option<&'static str>` expression for a column name.
+fn option_str(value: &Option<String>) -> TokenStream2 {
+    match value {
+        Some(value) => quote!(::std::option::Option::Some(#value)),
+        None => quote!(::std::option::Option::None),
+    }
 }
 
 fn field_column(field: &syn::Field) -> Option<String> {
@@ -351,7 +572,15 @@ fn is_i64(ty: &Type) -> bool {
     )
 }
 
+fn is_option_i64(ty: &Type) -> bool {
+    is_option_of(ty, is_i64)
+}
+
 fn is_option_string(ty: &Type) -> bool {
+    is_option_of(ty, is_string_type)
+}
+
+fn is_option_of(ty: &Type, inner: fn(&Type) -> bool) -> bool {
     let Type::Path(path) = ty else {
         return false;
     };
@@ -365,7 +594,7 @@ fn is_option_string(ty: &Type) -> bool {
         return false;
     };
     arguments.args.iter().any(|argument| match argument {
-        syn::GenericArgument::Type(inner) => is_string_type(inner),
+        syn::GenericArgument::Type(ty) => inner(ty),
         _ => false,
     })
 }

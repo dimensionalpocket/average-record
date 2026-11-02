@@ -109,6 +109,53 @@ user.destroy(); // DELETE
 only appear through a write that bypasses the library; hosts that want to reject those can add
 `CHECK (id != 0)` to their schema.
 
+### Timestamps
+
+`save()` stamps the model's configured timestamp columns. The default is ISO-8601 text.
+
+| Preset                         | `created` / `updated`       | Representation                |
+| ------------------------------ | --------------------------- | ----------------------------- |
+| `Timestamps.iso8601` (default) | `created_at` / `updated_at` | ISO-8601 string               |
+| `Timestamps.epochMillis`       | `created_ts` / `updated_ts` | epoch milliseconds (`number`) |
+| `Timestamps.none`              | —                           | automatic timestamps disabled |
+
+```typescript
+import { ApplicationRecord, Timestamps } from "average-record";
+
+class Event extends ApplicationRecord {
+  static database = db;
+  static tableName = "events";
+  static timestamps = Timestamps.epochMillis;
+  static schema = v.object({
+    id: v.optional(v.number()),
+    name: v.string(),
+    created_ts: v.number(),
+    updated_ts: v.number(),
+  });
+}
+```
+
+Custom column names use a `TimestampConfig` literal:
+
+```typescript
+static timestamps = {
+  created: "inserted_ms",
+  updated: "modified_ms",
+  format: "millis",
+} as const;
+```
+
+Rules (identical to the Rust implementation):
+
+- `created` is set only on insert, and only when it is unset — `null`/absent, `""` for ISO, `0` for
+  millis.
+- `updated` is set on every save unless `save({ skipUpdatedAt: true })`.
+- Both columns receive the same clock reading (`Date.now()` for millis, `new Date().toISOString()`
+  for ISO), so a new record has `created === updated`.
+- `Timestamps.none` disables both.
+
+DDL: `TEXT` for ISO-8601, `INTEGER` for epoch milliseconds.
+
 ### CRUD Operations
 
 ```typescript
@@ -160,9 +207,9 @@ const tracked = user.trackedChanges(); // { name: ["New Name", "Newer Name"] }, 
 // Inserts record [undefined, value], updates [before, after], and
 // destroy({ trackChanges: true }) records [value, undefined].
 
-// Timestamps: save() calls this automatically when the schema defines the columns
-user.setTimestamps(); // sets created_at on insert, bumps updated_at
-user.setTimestamps({ updatedAt: false }); // preserve an existing updated_at
+// Timestamps: save() calls this automatically using the model's static config
+user.setTimestamps(); // sets created on insert, bumps updated on save
+user.setTimestamps({ updatedAt: false }); // preserve an existing update timestamp
 ```
 
 ### Query Builder
@@ -356,15 +403,8 @@ class User extends ApplicationRecord {
   declare updated_at: string;
 
   protected beforeCreate(): void {
-    const record = this as Record<string, unknown>;
-    const now = new Date().toISOString();
-    record.created_at = record.created_at ?? now;
-    record.updated_at = now;
-  }
-
-  protected beforeUpdate(): void {
-    const record = this as Record<string, unknown>;
-    record.updated_at = new Date().toISOString();
+    // Runs before the insert; timestamps are handled by `static timestamps` (default ISO-8601).
+    console.log(`creating ${this.name}`);
   }
 
   protected afterSave(): void {

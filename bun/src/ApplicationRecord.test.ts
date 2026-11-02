@@ -1,6 +1,10 @@
 import { describe, expect, it, beforeAll, setSystemTime } from "bun:test";
 import * as v from "valibot";
-import { ApplicationRecord, redactedCache } from "./ApplicationRecord";
+import {
+  ApplicationRecord,
+  redactedCache,
+  Timestamps,
+} from "./ApplicationRecord";
 import { BunSqliteDatabase } from "./BunSqliteDatabase";
 
 beforeAll(() => {
@@ -401,6 +405,61 @@ describe("ApplicationRecord", () => {
       declare name: string;
     }
 
+    class MillisModel extends ApplicationRecord {
+      static database = db;
+      static tableName = "millis_models";
+      static timestamps = Timestamps.epochMillis;
+      static schema = v.object({
+        id: v.optional(v.number()),
+        name: v.string(),
+        created_ts: v.number(),
+        updated_ts: v.number(),
+      });
+
+      declare id: number;
+      declare name: string;
+      declare created_ts: number;
+      declare updated_ts: number;
+    }
+
+    class CustomMillisModel extends ApplicationRecord {
+      static database = db;
+      static tableName = "custom_millis_models";
+      static timestamps = {
+        created: "inserted_ms",
+        updated: "modified_ms",
+        format: "millis",
+      } as const;
+      static schema = v.object({
+        id: v.optional(v.number()),
+        name: v.string(),
+        inserted_ms: v.number(),
+        modified_ms: v.number(),
+      });
+
+      declare id: number;
+      declare name: string;
+      declare inserted_ms: number;
+      declare modified_ms: number;
+    }
+
+    class UntimedModel extends ApplicationRecord {
+      static database = db;
+      static tableName = "untimed_models";
+      static timestamps = Timestamps.none;
+      static schema = v.object({
+        id: v.optional(v.number()),
+        name: v.string(),
+        created_at: v.optional(v.string()),
+        updated_at: v.optional(v.string()),
+      });
+
+      declare id: number;
+      declare name: string;
+      declare created_at: string | undefined;
+      declare updated_at: string | undefined;
+    }
+
     beforeAll(() => {
       db.getDb().run(`
         CREATE TABLE IF NOT EXISTS timestamped_models (
@@ -414,6 +473,30 @@ describe("ApplicationRecord", () => {
         CREATE TABLE IF NOT EXISTS no_timestamp_models (
           id INTEGER PRIMARY KEY,
           name TEXT
+        )
+      `);
+      db.getDb().run(`
+        CREATE TABLE IF NOT EXISTS millis_models (
+          id INTEGER PRIMARY KEY,
+          name TEXT,
+          created_ts INTEGER NOT NULL,
+          updated_ts INTEGER NOT NULL
+        )
+      `);
+      db.getDb().run(`
+        CREATE TABLE IF NOT EXISTS custom_millis_models (
+          id INTEGER PRIMARY KEY,
+          name TEXT,
+          inserted_ms INTEGER NOT NULL,
+          modified_ms INTEGER NOT NULL
+        )
+      `);
+      db.getDb().run(`
+        CREATE TABLE IF NOT EXISTS untimed_models (
+          id INTEGER PRIMARY KEY,
+          name TEXT,
+          created_at TEXT,
+          updated_at TEXT
         )
       `);
     });
@@ -489,6 +572,82 @@ describe("ApplicationRecord", () => {
       model.save();
       expect((model as any).created_at).toBeUndefined();
       expect((model as any).updated_at).toBeUndefined();
+    });
+
+    it("sets integer epoch-millisecond timestamps on new records", () => {
+      const before = Date.now();
+      const model = new MillisModel({ name: "MillisNew" });
+      model.save();
+
+      expect(typeof model.created_ts).toBe("number");
+      expect(model.created_ts).toBe(model.updated_ts);
+      expect(model.created_ts).toBeGreaterThanOrEqual(before);
+
+      const raw = MillisModel.allRaw().find((row) => row.id === model.id);
+      expect(typeof raw!.created_ts).toBe("number");
+    });
+
+    it("advances only updated_ts on update", () => {
+      const model = new MillisModel({ name: "MillisUpdate" });
+      model.save();
+      const created = model.created_ts;
+
+      model.name = "MillisUpdated";
+      model.updated_ts = 1;
+      model.save();
+
+      expect(model.created_ts).toBe(created);
+      expect(model.updated_ts).toBeGreaterThan(1);
+    });
+
+    it("preserves updated_ts when skipUpdatedAt is set on update", () => {
+      const model = new MillisModel({ name: "MillisSkip" });
+      model.save();
+      const created = model.created_ts;
+
+      model.updated_ts = 1;
+      model.save({ skipUpdatedAt: true });
+
+      expect(model.updated_ts).toBe(1);
+      expect(model.created_ts).toBe(created);
+    });
+
+    it("treats 0 as unset for epoch-millisecond timestamps", () => {
+      const model = new MillisModel({
+        name: "MillisZero",
+        created_ts: 0,
+        updated_ts: 0,
+      });
+      expect(model.created_ts).toBeGreaterThan(0);
+      model.save();
+      expect(model.created_ts).toBeGreaterThan(0);
+    });
+
+    it("treats an empty string as unset like the Rust implementation", () => {
+      const model = new TimestampedModel({
+        name: "EmptyCreatedAt",
+        created_at: "",
+        updated_at: "",
+      });
+      expect(model.created_at).not.toBe("");
+      expect(model.updated_at).not.toBe("");
+    });
+
+    it("uses custom timestamp column names", () => {
+      const model = new CustomMillisModel({ name: "CustomMillis" });
+      model.save();
+
+      expect(model.inserted_ms).toBe(model.modified_ms);
+      const raw = CustomMillisModel.allRaw().find((row) => row.id === model.id);
+      expect(typeof raw!.inserted_ms).toBe("number");
+      expect(raw).not.toHaveProperty("created_at");
+    });
+
+    it("does nothing when timestamps are disabled", () => {
+      const model = new UntimedModel({ name: "Untimed" });
+      model.save();
+      expect(model.created_at).toBeUndefined();
+      expect(model.updated_at).toBeUndefined();
     });
   });
 

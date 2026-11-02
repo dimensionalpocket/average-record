@@ -5,7 +5,7 @@ use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 use std::str::FromStr;
 
 use crate::Result;
-use crate::model::{Model, ModelHooks};
+use crate::model::{Model, ModelHooks, Timestamps};
 use crate::query::SqlValue;
 use crate::validation::ValidationError;
 
@@ -41,7 +41,11 @@ pub async fn memory_connection() -> SqliteConnection {
         score INTEGER, created_at TEXT, updated_at TEXT, secret TEXT\
     );\
     CREATE TABLE test_stats (id INTEGER PRIMARY KEY, test_model_id INTEGER, score INTEGER);\
-    CREATE TABLE hook_models (id INTEGER PRIMARY KEY, name TEXT);";
+    CREATE TABLE hook_models (id INTEGER PRIMARY KEY, name TEXT);\
+    CREATE TABLE millis_models (\
+        id INTEGER PRIMARY KEY, name TEXT NOT NULL, \
+        created_ts INTEGER NOT NULL DEFAULT 0, updated_ts INTEGER NOT NULL DEFAULT 0\
+    );";
     sqlx::raw_sql(AssertSqlSafe(ddl.to_string()))
         .execute(&mut conn)
         .await
@@ -229,3 +233,62 @@ impl ModelHooks for ValidatedModel {
         Ok(vec![ValidationError::new("name", "is not allowed")])
     }
 }
+
+/// A hand-written model using epoch-millisecond timestamps.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MillisModel {
+    pub id: i64,
+    pub name: String,
+    pub created_ts: i64,
+    pub updated_ts: i64,
+}
+
+impl Model for MillisModel {
+    const TABLE_NAME: &'static str = "millis_models";
+    const TIMESTAMPS: Timestamps = Timestamps::EPOCH_MILLIS;
+    const COLUMNS: &'static [&'static str] = &["id", "name", "created_ts", "updated_ts"];
+
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            created_ts: row.try_get("created_ts")?,
+            updated_ts: row.try_get("updated_ts")?,
+        })
+    }
+
+    fn to_values(&self) -> Vec<SqlValue> {
+        vec![
+            self.id.into(),
+            self.name.clone().into(),
+            self.created_ts.into(),
+            self.updated_ts.into(),
+        ]
+    }
+
+    fn primary_key_value(&self) -> i64 {
+        self.id
+    }
+
+    fn set_primary_key(&mut self, id: i64) {
+        self.id = id;
+    }
+
+    fn set_column(&mut self, column: &str, value: SqlValue) {
+        match column {
+            "created_ts" => {
+                if let Some(value) = value.as_i64() {
+                    self.created_ts = value;
+                }
+            }
+            "updated_ts" => {
+                if let Some(value) = value.as_i64() {
+                    self.updated_ts = value;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl ModelHooks for MillisModel {}

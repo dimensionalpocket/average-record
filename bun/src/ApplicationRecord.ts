@@ -17,6 +17,51 @@ function isNewRecord(record: Record<string, unknown>, pk: string): boolean {
 }
 
 /**
+ * Where a model keeps its timestamps and how they are written.
+ *
+ * Set via the static `timestamps` property (see the {@link Timestamps} presets).
+ */
+export interface TimestampConfig {
+  /** Column receiving the creation timestamp, or `null` to disable. */
+  created: string | null;
+  /** Column receiving the update timestamp, or `null` to disable. */
+  updated: string | null;
+  /** `"iso"` writes `Date#toISOString()`; `"millis"` writes `Date.now()`. */
+  format: "iso" | "millis";
+}
+
+/**
+ * Timestamp presets for the static `timestamps` property.
+ *
+ * ```typescript
+ * class Event extends ApplicationRecord {
+ *   static timestamps = Timestamps.epochMillis; // created_ts / updated_ts as integers
+ * }
+ * ```
+ */
+export const Timestamps = {
+  /** `created_at` / `updated_at` as ISO-8601 text. The default. */
+  iso8601: { created: "created_at", updated: "updated_at", format: "iso" },
+  /** `created_ts` / `updated_ts` as epoch milliseconds. */
+  epochMillis: {
+    created: "created_ts",
+    updated: "updated_ts",
+    format: "millis",
+  },
+  /** No automatic timestamps. */
+  none: { created: null, updated: null, format: "iso" },
+} satisfies Record<string, TimestampConfig>;
+
+/** Returns true when a timestamp column holds no value for the given format. */
+function isUnsetTimestamp(
+  value: unknown,
+  format: TimestampConfig["format"],
+): boolean {
+  if (value == null) return true;
+  return format === "millis" ? value === 0 : value === "";
+}
+
+/**
  * Base class for database models. Subclasses define `tableName`, `schema`, and `database`.
  * The `schema` property must be a Valibot object schema defining the model's columns.
  *
@@ -44,6 +89,15 @@ export class ApplicationRecord {
   static tableName: string;
   static schema: v.ObjectSchema<any, any>;
   static primaryKey: string = "id";
+
+  /**
+   * Where this model keeps its timestamps and how they are written. Defaults to
+   * {@link Timestamps.iso8601} (`created_at`/`updated_at` as ISO-8601 text).
+   *
+   * Use {@link Timestamps.epochMillis} for `created_ts`/`updated_ts` integer columns, or a
+   * {@link TimestampConfig} literal for custom column names.
+   */
+  static timestamps: TimestampConfig = Timestamps.iso8601;
 
   /** @see {@link ApplicationRecordQuery.where} */
   static where<T extends typeof ApplicationRecord>(
@@ -318,20 +372,31 @@ export class ApplicationRecord {
     return this;
   }
 
-  /** Sets `created_at` and `updated_at` if the schema defines those columns. */
+  /**
+   * Sets the creation and update timestamps if the schema defines the configured columns.
+   *
+   * Columns and representation come from the static {@link timestamps} config: `created` only when
+   * the record is new and the value is unset (`null`, `""` for ISO, `0` for millis), `updated`
+   * unless `updatedAt: false`. Both receive the same clock reading.
+   */
   setTimestamps(options: SetTimestampOptions = {}): void {
     const Ctor = this.constructor as typeof ApplicationRecord;
+    const { created, updated, format } = Ctor.timestamps;
     const record = this as Record<string, unknown>;
     const schema = Ctor.schema.entries;
-    const pk = Ctor.primaryKey;
-    const isNew = isNewRecord(record, pk);
-    const now = new Date().toISOString();
+    const isNew = isNewRecord(record, Ctor.primaryKey);
+    const now = format === "millis" ? Date.now() : new Date().toISOString();
 
-    if ("created_at" in schema && isNew && record.created_at == null) {
-      record.created_at = now;
+    if (
+      created &&
+      created in schema &&
+      isNew &&
+      isUnsetTimestamp(record[created], format)
+    ) {
+      record[created] = now;
     }
-    if ("updated_at" in schema && options.updatedAt !== false) {
-      record.updated_at = now;
+    if (updated && updated in schema && options.updatedAt !== false) {
+      record[updated] = now;
     }
   }
 
@@ -591,11 +656,11 @@ function hasRedactedMeta(schema: unknown): boolean {
 
 export interface SaveOptions {
   trackChanges?: boolean;
-  /** On update, keep the existing `updated_at` instead of bumping it. Ignored on insert. */
+  /** On update, keep the existing update timestamp instead of bumping it. Ignored on insert. */
   skipUpdatedAt?: boolean;
 }
 
 export interface SetTimestampOptions {
-  /** When false, an existing `updated_at` is preserved instead of being bumped. */
+  /** When false, an existing update timestamp is preserved instead of being bumped. */
   updatedAt?: boolean;
 }

@@ -17,8 +17,69 @@ use crate::validation::ValidationError;
 pub struct SaveOptions {
     /// Capture old/new value pairs for [`Model::tracked_changes`].
     pub track_changes: bool,
-    /// On update, preserve the existing `updated_at` instead of bumping it.
+    /// On update, preserve the existing updated timestamp instead of bumping it.
     pub skip_updated_at: bool,
+}
+
+/// How a model's timestamps are written into their columns.
+///
+/// See [`Model::TIMESTAMPS`] and [`Timestamps`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TimestampFormat {
+    /// UTC text, `YYYY-MM-DDTHH:MM:SS.mmmZ`, in a `TEXT` column.
+    #[default]
+    Iso8601,
+    /// Milliseconds since the Unix epoch, in an `INTEGER` column.
+    EpochMillis,
+}
+
+/// Where a model keeps its creation/update timestamps and how they are written.
+///
+/// Set via [`Model::TIMESTAMPS`]; the derive macro's `#[model(timestamps = ...)]` attribute generates
+/// it. Column names must be persisted columns ([`Model::COLUMNS`]): a name that is not persisted is
+/// ignored at runtime (the derive rejects it at compile time).
+///
+/// ```
+/// use average_record::{Model, Timestamps};
+///
+/// // `created_ts` / `updated_ts` as epoch milliseconds:
+/// # #[derive(Model)]
+/// # #[model(table = "events", timestamps = "epoch_millis")]
+/// # struct Event { #[model(primary_key)] id: i64, created_ts: i64, updated_ts: i64 }
+/// # impl average_record::ModelHooks for Event {}
+/// assert_eq!(Event::TIMESTAMPS, Timestamps::EPOCH_MILLIS);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timestamps {
+    /// Column that receives the creation timestamp, or `None` to disable.
+    pub created: Option<&'static str>,
+    /// Column that receives the update timestamp, or `None` to disable.
+    pub updated: Option<&'static str>,
+    /// How both columns are written.
+    pub format: TimestampFormat,
+}
+
+impl Timestamps {
+    /// `created_at` / `updated_at` as ISO-8601 text. The historical default.
+    pub const ISO8601: Self = Self {
+        created: Some("created_at"),
+        updated: Some("updated_at"),
+        format: TimestampFormat::Iso8601,
+    };
+
+    /// `created_ts` / `updated_ts` as epoch milliseconds.
+    pub const EPOCH_MILLIS: Self = Self {
+        created: Some("created_ts"),
+        updated: Some("updated_ts"),
+        format: TimestampFormat::EpochMillis,
+    };
+
+    /// No automatic timestamps.
+    pub const NONE: Self = Self {
+        created: None,
+        updated: None,
+        format: TimestampFormat::Iso8601,
+    };
 }
 
 /// Static table metadata and row/column mapping.
@@ -37,6 +98,14 @@ pub trait Model: Sized + Send + 'static {
 
     /// Columns redacted by [`Model::to_json`], [`Model::persisted`], and [`Model::changes`].
     const REDACTED_COLUMNS: &'static [&'static str] = &[];
+
+    /// Where this model keeps its creation/update timestamps and how they are written.
+    ///
+    /// Defaults to [`Timestamps::ISO8601`] (`created_at`/`updated_at` as ISO-8601 text), so models
+    /// that do not set it behave as they always have. Use [`Timestamps::EPOCH_MILLIS`] for
+    /// `created_ts`/`updated_ts` integer columns, or a [`Timestamps`] literal for custom column
+    /// names.
+    const TIMESTAMPS: Timestamps = Timestamps::ISO8601;
 
     /// Maps a database row to an instance. Virtual fields are populated when present.
     fn from_row(row: &SqliteRow) -> Result<Self>;
@@ -69,8 +138,10 @@ pub trait Model: Sized + Send + 'static {
 
     /// Sets a persisted column from a [`SqlValue`]. Used internally by automatic timestamps.
     ///
-    /// The derive macro implements this for `String` and `Option<String>` columns. Hand-written
-    /// models must implement it to participate in automatic `created_at`/`updated_at` management.
+    /// The derive macro implements this for `String` and `Option<String>` columns, and for the
+    /// columns configured in [`Model::TIMESTAMPS`] when they are `i64` or `Option<i64>`. Hand-written
+    /// models must implement it for their timestamp columns to participate in automatic
+    /// [`Model::set_timestamps`].
     fn set_column(&mut self, column: &str, value: SqlValue) {
         let _ = (column, value);
     }
@@ -146,21 +217,35 @@ pub trait Model: Sized + Send + 'static {
         Value::Object(map)
     }
 
-    /// Sets `created_at`/`updated_at` when those columns exist and it is appropriate to do so.
+    /// Sets a model's timestamps when it is appropriate to do so.
+    ///
+    /// The columns and representation come from [`Model::TIMESTAMPS`]: the creation column is set
+    /// when the record is new and the column is unset (`NULL`, `""` for ISO-8601 text, `0` for epoch
+    /// milliseconds), and the update column is set unless `skip_updated_at` is `true` (it is always
+    /// set on insert). Columns that are not in [`Model::COLUMNS`] are ignored.
+    ///
+    /// Both columns receive the same clock reading, so a new record has `created == updated`.
     fn set_timestamps(&mut self, skip_updated_at: bool) {
-        let is_new = self.is_new();
-        if Self::COLUMNS.contains(&"created_at") && is_new {
-            let unset = match self.get_column("created_at") {
-                None | Some(SqlValue::Null) => true,
-                Some(SqlValue::Text(text)) => text.is_empty(),
-                Some(_) => false,
-            };
-            if unset {
-                self.set_column("created_at", SqlValue::Text(timestamp_now()));
-            }
+        let spec = Self::TIMESTAMPS;
+        let now = timestamp_now_millis();
+
+        if let Some(column) = spec.created
+            && Self::COLUMNS.contains(&column)
+            && self.is_new()
+            && is_unset_timestamp(self.get_column(column), spec.format)
+        {
+            let value = timestamp_value(now, spec.format);
+            self.set_column(column, value.clone());
+            debug_assert_timestamp_set(self, column, &value);
         }
-        if Self::COLUMNS.contains(&"updated_at") && !skip_updated_at {
-            self.set_column("updated_at", SqlValue::Text(timestamp_now()));
+
+        if let Some(column) = spec.updated
+            && Self::COLUMNS.contains(&column)
+            && !skip_updated_at
+        {
+            let value = timestamp_value(now, spec.format);
+            self.set_column(column, value.clone());
+            debug_assert_timestamp_set(self, column, &value);
         }
     }
 
@@ -570,14 +655,19 @@ pub trait ModelHooks: Model {
     }
 }
 
-/// Returns the current UTC time formatted as ISO-8601 (`YYYY-MM-DDTHH:MM:SS.mmmZ`).
-pub(crate) fn timestamp_now() -> String {
+/// Returns the current Unix time in milliseconds.
+pub(crate) fn timestamp_now_millis() -> i64 {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let millis = duration.as_millis();
-    let total_seconds = (millis / 1000) as i64;
-    let milliseconds = (millis % 1000) as u32;
+    // Safe for any realistic clock; `u128 -> i64` only overflows in the year ~292 million.
+    duration.as_millis() as i64
+}
+
+/// Returns the current UTC time formatted as ISO-8601 (`YYYY-MM-DDTHH:MM:SS.mmmZ`).
+fn format_timestamp(millis: i64) -> String {
+    let total_seconds = millis.div_euclid(1000);
+    let milliseconds = millis.rem_euclid(1000) as u32;
 
     let days = total_seconds.div_euclid(86_400);
     let seconds_of_day = total_seconds.rem_euclid(86_400);
@@ -587,6 +677,35 @@ pub(crate) fn timestamp_now() -> String {
     let second = seconds_of_day % 60;
 
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{milliseconds:03}Z")
+}
+
+/// Returns the value written into a timestamp column.
+fn timestamp_value(millis: i64, format: TimestampFormat) -> SqlValue {
+    match format {
+        TimestampFormat::Iso8601 => SqlValue::Text(format_timestamp(millis)),
+        TimestampFormat::EpochMillis => SqlValue::Integer(millis),
+    }
+}
+
+/// Returns `true` when the column holds no timestamp for this format.
+fn is_unset_timestamp(value: Option<SqlValue>, format: TimestampFormat) -> bool {
+    match (value, format) {
+        (None, _) | (Some(SqlValue::Null), _) => true,
+        // A value of the other storage class means the model disagrees with its own format (only
+        // reachable from a hand-written impl); preserving the stored value is the safe choice.
+        (Some(value), TimestampFormat::Iso8601) => value.as_str().is_some_and(str::is_empty),
+        (Some(value), TimestampFormat::EpochMillis) => value.as_i64() == Some(0),
+    }
+}
+
+/// Fails in debug builds when `Model::set_column` silently ignored a timestamp column.
+fn debug_assert_timestamp_set<M: Model>(model: &M, column: &str, value: &SqlValue) {
+    debug_assert_eq!(
+        model.get_column(column),
+        Some(value.clone()),
+        "{}::set_column(\"{column}\") did not assign the timestamp; implement set_column for it",
+        M::TABLE_NAME
+    );
 }
 
 /// Converts a count of days since 1970-01-01 into a `(year, month, day)` civil date.
@@ -613,7 +732,8 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use crate::test_support::{
-        HookModel, TEST_LOCK, TestModel, ValidatedModel, memory_connection, take_hook_events,
+        HookModel, MillisModel, TEST_LOCK, TestModel, ValidatedModel, memory_connection,
+        take_hook_events,
     };
 
     #[tokio::test(flavor = "multi_thread")]
@@ -934,12 +1054,128 @@ mod tests {
         assert_eq!(TestModel::count(&mut conn).await.unwrap(), 0);
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn millisecond_timestamps_are_set_on_insert() {
+        let mut conn = memory_connection().await;
+        let before = timestamp_now_millis();
+        let mut model = MillisModel {
+            name: "foo".to_string(),
+            ..Default::default()
+        };
+
+        model.save(&mut conn).await.unwrap();
+
+        assert_eq!(model.created_ts, model.updated_ts);
+        assert!(model.created_ts >= before);
+        assert!(model.created_ts <= timestamp_now_millis());
+
+        let found = MillisModel::find(&mut conn, model.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.created_ts, model.created_ts);
+        assert_eq!(found.updated_ts, model.updated_ts);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn update_bumps_only_the_millisecond_updated_ts() {
+        let mut conn = memory_connection().await;
+        let mut model = MillisModel {
+            name: "foo".to_string(),
+            ..Default::default()
+        };
+        model.save(&mut conn).await.unwrap();
+        let created = model.created_ts;
+
+        model.name = "bar".to_string();
+        model.updated_ts = 1;
+        model.save(&mut conn).await.unwrap();
+
+        assert_eq!(model.created_ts, created);
+        assert!(model.updated_ts > 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn skip_updated_at_preserves_the_millisecond_timestamp() {
+        let mut conn = memory_connection().await;
+        let mut model = MillisModel {
+            name: "foo".to_string(),
+            ..Default::default()
+        };
+        model.save(&mut conn).await.unwrap();
+        let created = model.created_ts;
+
+        model.updated_ts = 1;
+        model
+            .save_with_options(
+                &mut conn,
+                SaveOptions {
+                    skip_updated_at: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(model.updated_ts, 1);
+        assert_eq!(model.created_ts, created);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zero_created_ts_is_treated_as_unset() {
+        let mut conn = memory_connection().await;
+        let mut model = MillisModel {
+            name: "foo".to_string(),
+            created_ts: 0,
+            ..Default::default()
+        };
+
+        model.save(&mut conn).await.unwrap();
+
+        assert_ne!(model.created_ts, 0);
+        assert_eq!(model.created_ts, model.updated_ts);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn caller_supplied_created_ts_is_preserved() {
+        let mut conn = memory_connection().await;
+        let fixed = 1_600_000_000_000;
+        let mut model = MillisModel {
+            name: "foo".to_string(),
+            created_ts: fixed,
+            ..Default::default()
+        };
+
+        model.save(&mut conn).await.unwrap();
+
+        assert_eq!(model.created_ts, fixed);
+        assert!(model.updated_ts >= fixed);
+    }
+
+    #[test]
+    fn timestamp_now_millis_matches_the_system_clock() {
+        let now = timestamp_now_millis();
+        assert!(now.abs_diff(timestamp_now_millis()) < 1_000);
+        // A real clock is somewhere between 2020-01-01 and 2100-01-01.
+        assert!(now > 1_577_836_800_000 && now < 4_102_444_800_000);
+    }
+
     #[test]
     fn timestamp_now_is_iso8601_utc() {
-        let now = timestamp_now();
+        let now = format_timestamp(timestamp_now_millis());
         assert_eq!(now.len(), 24);
         assert!(now.ends_with('Z'));
         assert_eq!(&now[4..5], "-");
         assert_eq!(&now[10..11], "T");
+    }
+
+    #[test]
+    fn formats_epoch_milliseconds_as_iso8601() {
+        assert_eq!(format_timestamp(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(
+            format_timestamp(1_600_000_000_123),
+            "2020-09-13T12:26:40.123Z"
+        );
+        assert_eq!(format_timestamp(-1), "1969-12-31T23:59:59.999Z");
     }
 }

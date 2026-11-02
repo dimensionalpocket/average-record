@@ -238,6 +238,8 @@ pub struct User {
 | Attribute                     | Placement | Meaning                                                                 |
 | ----------------------------- | --------- | ----------------------------------------------------------------------- |
 | `#[model(table = "users")]`   | struct    | Required. Table name.                                                   |
+| `#[model(timestamps = "epoch_millis")]` | struct | Writes `created_ts`/`updated_ts` as epoch-millisecond `i64`. Also `iso8601` (default) and `none`. |
+| `#[model(timestamps(created = "...", updated = "...", format = "..."))]` | struct | Custom timestamp column names; an omitted `created`/`updated` disables that column. |
 | `#[model(primary_key)]`       | field     | Marks the primary key (defaults to a column named `id`). Must be `i64`; `0` means new. |
 | `#[model(column = "locked")]` | field     | Maps a Rust field to a differently named column.                        |
 | `#[model(virtual)]`           | field     | Non-persisted projection field (excluded from `COLUMNS` and writes).    |
@@ -361,6 +363,88 @@ a compile error rather than a silent no-op.
 
 ---
 
+## Timestamps
+
+Writes stamp the columns configured by the model's `TIMESTAMPS` constant. The default is
+`Timestamps::ISO8601`: `created_at` and `updated_at` as ISO-8601 UTC text
+(`YYYY-MM-DDTHH:MM:SS.mmmZ`). Models that store integer timestamps opt in:
+
+```rust
+use average_record::{Model, ModelHooks};
+
+#[derive(Model)]
+#[model(table = "events", timestamps = "epoch_millis")]
+struct Event {
+    #[model(primary_key)]
+    id: i64,
+    name: String,
+    created_ts: i64,   // epoch milliseconds, 0 means "unset"
+    updated_ts: i64,
+}
+
+impl ModelHooks for Event {}
+```
+
+| Preset | `created` / `updated` | Representation |
+| --- | --- | --- |
+| `iso8601` (default) | `created_at` / `updated_at` | `String`, UTC `YYYY-MM-DDTHH:MM:SS.mmmZ` |
+| `epoch_millis` | `created_ts` / `updated_ts` | `i64`, milliseconds since the Unix epoch |
+| `none` | — | automatic timestamps disabled |
+
+Custom column names use the explicit form:
+
+```rust
+#[model(
+    table = "audits",
+    timestamps(created = "inserted_ms", updated = "modified_ms", format = "epoch_millis")
+)]
+```
+
+| Operation | `created` column | `updated` column |
+| --- | --- | --- |
+| INSERT | set when the record is new **and** the field is unset (`NULL`, `""`, `0`) | always set |
+| UPDATE | never touched | set unless `skip_updated_at` |
+| `skip_updated_at: true` on INSERT | — | still set |
+| Column missing from `COLUMNS`, or `None` in `TIMESTAMPS` | no-op | no-op |
+
+Both columns receive the same clock reading, so a new record always has `created == updated`.
+`0` is never a valid timestamp, mirroring `id == 0`.
+
+The derive validates the columns you name: they must be persisted columns, and their Rust type must
+match the representation (`String`/`Option<String>` for `iso8601`, `i64`/`Option<i64>` for
+`epoch_millis`). The implicit default is permissive, so a model with no timestamp columns needs no
+attribute.
+
+DDL expectations: `TEXT` for ISO-8601, `INTEGER NOT NULL DEFAULT 0` for epoch milliseconds. A nullable
+column must be modeled as `Option<i64>`/`Option<String>`; `from_row` uses `try_get` and does not
+coalesce.
+
+Hand-written models set the constant and assign the columns themselves:
+
+```rust
+use average_record::{Model, Timestamps, SqlValue};
+
+impl Model for Event {
+    const TABLE_NAME: &'static str = "events";
+    const TIMESTAMPS: Timestamps = Timestamps::EPOCH_MILLIS;
+    const COLUMNS: &'static [&'static str] = &["id", "name", "created_ts", "updated_ts"];
+
+    // from_row, to_values, primary_key_value, set_primary_key ...
+
+    fn set_column(&mut self, column: &str, value: SqlValue) {
+        match column {
+            "created_ts" => self.created_ts = value.as_i64().unwrap_or(self.created_ts),
+            "updated_ts" => self.updated_ts = value.as_i64().unwrap_or(self.updated_ts),
+            _ => {}
+        }
+    }
+}
+```
+
+`to_json()`/`Serialize` emit a JSON number for epoch-millisecond columns.
+
+---
+
 ## CRUD
 
 ```rust
@@ -384,7 +468,8 @@ let total: i64 = User::count(&mut conn).await?;
 user.destroy(&mut conn).await?;
 ```
 
-`created_at` and `updated_at` are managed automatically when those columns exist in `COLUMNS`.
+Timestamps are managed automatically; see [Timestamps](#timestamps) for the ISO-8601 default and the
+per-model epoch-millisecond option.
 
 ### Write methods
 
@@ -409,7 +494,7 @@ Passed to the `_with_options` variants only.
 | Field             | Default | Meaning                                                      |
 | ----------------- | ------- | ------------------------------------------------------------ |
 | `track_changes`   | `false` | Capture old/new value pairs for `tracked_changes()` (below). |
-| `skip_updated_at` | `false` | On update, keep the existing `updated_at`.                   |
+| `skip_updated_at` | `false` | On update, keep the existing updated timestamp.              |
 
 ```rust
 use average_record::SaveOptions;

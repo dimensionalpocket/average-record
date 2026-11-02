@@ -47,7 +47,8 @@ design choice, except `backupToFile`, which has no Rust equivalent at any layer.
 ## Parity (no gap, despite surface differences)
 
 CRUD and save/destroy options (`trackChanges`/`skipUpdatedAt` ≡ `track_changes`/`skip_updated_at`),
-automatic `created_at`/`updated_at`, `find`/`first`/`all`/`count`, streaming (`each`/`eachRaw` ≡
+automatic timestamps (configurable per model: `Model::TIMESTAMPS` ≡ `static timestamps`, with an
+ISO-8601 text default and an epoch-millisecond integer option in both), `find`/`first`/`all`/`count`, streaming (`each`/`eachRaw` ≡
 `fetch`/`fetch_raw`), raw rows (`allRaw` ≡ `all_raw`), `select`/`selectClear`/`join`, fuzzy search
 (raw SQL fragments with `?` patterns allowed as search columns in **both**), `IN`/`NOT IN`,
 `limit`/`offset`, validation (Valibot vs garde) plus `validateCustom` and uniqueness checks
@@ -71,6 +72,7 @@ on an unsaved record errors in both.
 | Comparison helpers | `where_eq`, `where_gt`, … | `where(col, op, value)` |
 | Redaction source | `#[redacted]` field attribute | `v.metadata({ redacted: true })` |
 | Validation rules | `#[garde(...)]` | Valibot schema |
+| Timestamp config | `Model::TIMESTAMPS` (`Timestamps` presets / derive attribute) | `static timestamps` (`Timestamps` presets) |
 
 ## If this is ever acted on
 

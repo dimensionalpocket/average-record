@@ -9,6 +9,12 @@
 //! `&mut Transaction<'_, Sqlite>`). Acquire one connection per unit of work and pass it down so
 //! related reads and writes see each other.
 //!
+//! # Timestamps
+//!
+//! Writes stamp [`Model::TIMESTAMPS`]: by default `created_at`/`updated_at` as ISO-8601 text, or
+//! `created_ts`/`updated_ts` as epoch milliseconds when a model opts in with
+//! `#[model(timestamps = "epoch_millis")]`.
+//!
 //! ```
 //! # use average_record::{Model, ModelHooks, Result};
 //! # use sqlx::SqliteConnection;
@@ -43,7 +49,7 @@ pub use average_record_derive::Model;
 
 pub use changes::{Change, Changes, TrackedChanges};
 pub use error::{Error, Result};
-pub use model::{Model, ModelHooks, SaveOptions};
+pub use model::{Model, ModelHooks, SaveOptions, TimestampFormat, Timestamps};
 pub use query::{Direction, GeneratedSql, Query, SqlValue, ValueMap};
 pub use validation::ValidationError;
 
